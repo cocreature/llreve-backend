@@ -1,0 +1,20 @@
+name:                llreve-backend
+version:             0.1.0.0
+synopsis:            Simple project template from stack
+description:         Please see README.md
+homepage:            https://github.com/cocreature/llreve-backend#readme
+license:             BSD3
+license-file:        LICENSE
+author:              Moritz Kiefer
+maintainer:          value
+copyright:           (C) 2016 Moritz Kiefer
+category:            Web
+build-type:          Simple
+cabal-version:       >=1.10
+extra-source-files:  README.md
+
+executable llreve-backend
+  hs-source-dirs:      src
+  main-is:             Main.hs
+  default-language:    Haskell2010
+  build-depends:       base >= 4.9 && < 5
