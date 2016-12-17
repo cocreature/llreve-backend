@@ -12,6 +12,7 @@ category:            Web
 build-type:          Simple
 cabal-version:       >=1.10
 extra-source-files:  README.md
+tested-with:         GHC == 8.0.1
 
 executable llreve-backend
   hs-source-dirs:      src
