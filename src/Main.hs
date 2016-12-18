@@ -143,7 +143,7 @@ server (Request method (Pair prog1 prog2) patterns) =
               Dynamic -> runLlreveDynamic file1 file2 patterns smtFile
 
 llreveBinary :: String
-llreveBinary = "reve"
+llreveBinary = "llreve"
 
 runLlreve
   :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)

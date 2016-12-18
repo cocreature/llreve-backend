@@ -66,3 +66,9 @@ extra-package-dbs: []
 #
 # Allow a newer minor version of GHC than the snapshot specifies
 # compiler-check: newer-minor
+image:
+  container:
+    base: "cocreature/llreve-backend-base"
+    name: "cocreature/llreve-backend"
+    entrypoints:
+      - llreve-backend
