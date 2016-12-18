@@ -13,7 +13,6 @@ import qualified Control.Monad.Log as Log
 import           Control.Monad.Log hiding (Handler, Error)
 import           Control.Monad.Trans.Control
 import           Data.Aeson hiding (Error)
-import qualified Data.ByteString as ByteString
 import           Data.Monoid
 import           Data.Proxy (Proxy)
 import           Data.Text (Text)
@@ -22,6 +21,7 @@ import           Data.Text.Encoding
 import qualified Data.Text.IO as Text
 import           Debug.Trace
 import           Horname
+import           Llreve.Util
 import           Network.Wai.Handler.Warp (run)
 import           Network.Wai.Middleware.Cors
 import           Network.Wai.Middleware.RequestLogger
@@ -40,11 +40,6 @@ maxTimeout = 15
 
 maxConcurrentReqs :: Int
 maxConcurrentReqs = 2
-
-liftBaseOp2 :: MonadBaseControl b m
-            => ((a -> a' -> b (StM m c)) -> b (StM m d))
-            -> ((a -> a' ->        m c)  ->        m d)
-liftBaseOp2 f = \g -> control $ \runInBase -> f $ \a a' -> runInBase (g a a')
 
 data SMTSolver = Eldarica | Z3
 data Method = Solver !SMTSolver | Dynamic
@@ -116,21 +111,25 @@ data ProgramOutput = ProgramOutput
   { progOut :: !Text
   } deriving (Show, Eq, Ord)
 
+newtype SMTFile =
+  SMTFile Text
+  deriving (Show, Eq, Ord)
+
 data LogMessage
   = LlreveMsg { llreveMsg :: !Text
              ,  llreveOutp :: !ProgramOutput
              ,  llreveInp :: !LlreveInput}
   | Z3Msg { z3Msg :: !Text
-         ,  z3Inp :: !Text
+         ,  z3Inp :: !SMTFile
          ,  z3Outp :: !ProgramOutput
          ,  llreveInp :: !LlreveInput}
   | HornameMsg { hornameMsg :: !Text
               ,  hornameSolverInp :: !Text
               ,  hornameSolverOutp :: !Text}
   | EldaricaMsg { eldaricaMsg :: !Text
+               ,  eldInput :: !SMTFile
                ,  eldOutp :: !ProgramOutput
-               ,  llreveInp :: !LlreveInput
-               ,  eldInput :: !Text}
+               ,  llreveInp :: !LlreveInput}
   deriving (Show, Eq, Ord)
 
 llreveArgsForSolver :: SMTSolver -> [String]
@@ -162,9 +161,12 @@ server (Request method (Pair prog1 prog2) patterns) =
                 case resp of
                   Left resp -> pure resp
                   Right llreveOutp ->
-                    case solver of
-                      Z3 -> runZ3 file1 file2 smtFile llreveOutp
-                      Eldarica -> runEldarica file1 file2 smtFile llreveOutp
+                    runSolver
+                      file1
+                      file2
+                      smtFile
+                      llreveOutp
+                      (solverConfig solver)
               Dynamic -> runLlreveDynamic file1 file2 patterns smtFile
 
 llreveBinary :: String
@@ -188,17 +190,6 @@ runLlreve prog1 prog2 smt llreveArgs = do
       logError (LlreveMsg "llreve failed" (ProgramOutput llreveOut) llreveInp)
       pure (Left (Response Error llreveOut "" "" []))
 
-z3Binary :: String
-z3Binary = "z3"
-
-parseZ3Result :: Text -> LlreveResult
-parseZ3Result output =
-  case findFirstInfix
-         (("unsat" *> pure Equivalent) <|> ("sat" *> pure NotEquivalent))
-         output of
-    Just (_, result, _) -> result
-    Nothing -> Error
-
 llreveInput :: MonadIO m => FilePath -> FilePath -> m LlreveInput
 llreveInput prog1 prog2 = do
   liftIO $ LlreveInput <$> Text.readFile prog1 <*> Text.readFile prog2
@@ -221,24 +212,17 @@ findInvariants result smtPath solverOutp =
           pure []
     _ -> pure []
 
-runZ3
-  :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
-  => FilePath -> FilePath -> FilePath -> Text -> m Response
-runZ3 prog1 prog2 smtPath llreveOutp = do
-  (exit, z3Out) <-
-    liftIO $
-    readProcessWithExitCode z3Binary ["fixedpoint.engine=duality", smtPath] ""
-  case exit of
-    ExitSuccess -> do
-      let result = parseZ3Result z3Out
-      invariants <- findInvariants result smtPath z3Out
-      smt <- liftIO $ Text.readFile smtPath
-      pure (Response result llreveOutp z3Out smt invariants)
-    ExitFailure _ -> do
-      llreveInp <- llreveInput prog1 prog2
-      smtInp <- liftIO $ Text.readFile smtPath
-      logError (Z3Msg "Z3 failed" smtInp (ProgramOutput z3Out) llreveInp)
-      throwError err500
+
+z3Binary :: String
+z3Binary = "z3"
+
+parseZ3Result :: Text -> LlreveResult
+parseZ3Result output =
+  case findFirstInfix
+         (("unsat" *> pure Equivalent) <|> ("sat" *> pure NotEquivalent))
+         output of
+    Just (_, result, _) -> result
+    Nothing -> Error
 
 eldaricaBinary :: String
 eldaricaBinary = "eld"
@@ -252,26 +236,45 @@ parseEldaricaResult output =
     Just (_, result, _) -> result
     Nothing -> Error
 
-runEldarica :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
-            => FilePath -> FilePath -> FilePath -> Text -> m Response
-runEldarica prog1 prog2 smtPath llreveOutp = do
-  (exit, eldOut) <-
-    liftIO $ readProcessWithExitCode eldaricaBinary ["-ssol", smtPath] ""
+data SolverConfig = SolverCfg
+  { solverBinaryPath :: String
+  , solverParseResult :: Text -> LlreveResult
+  , solverArgs :: FilePath -> [String]
+  , solverLogMsg :: Text -> SMTFile -> ProgramOutput -> LlreveInput -> LogMessage
+  }
+
+solverConfig :: SMTSolver -> SolverConfig
+solverConfig Z3 =
+  SolverCfg z3Binary parseZ3Result (: ["fixedpoint.engine=duality"]) Z3Msg
+solverConfig Eldarica =
+  SolverCfg eldaricaBinary parseEldaricaResult (: ["-ssol"]) EldaricaMsg
+
+runSolver
+  :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
+  => FilePath -> FilePath -> FilePath -> Text -> SolverConfig -> m Response
+runSolver prog1 prog2 smtPath llreveOutp solver = do
+  (exit, solverOutp) <-
+    liftIO $
+    readProcessWithExitCode
+      (solverBinaryPath solver)
+      (solverArgs solver smtPath)
+      ""
   case exit of
     ExitSuccess -> do
-      let result = parseEldaricaResult eldOut
-      invariants <- findInvariants result smtPath eldOut
+      let result = solverParseResult solver solverOutp
+      invariants <- findInvariants result smtPath solverOutp
       smt <- liftIO $ Text.readFile smtPath
-      pure (Response result llreveOutp eldOut smt invariants)
+      pure (Response result llreveOutp solverOutp smt invariants)
     ExitFailure _ -> do
       llreveInp <- llreveInput prog1 prog2
       smtInp <- liftIO $ Text.readFile smtPath
       logError
-        (EldaricaMsg
-           "Eldarica failed"
-           (ProgramOutput eldOut)
-           llreveInp
-           smtInp)
+        (solverLogMsg
+           solver
+           "Non-zero exit code"
+           (SMTFile smtInp)
+           (ProgramOutput solverOutp)
+           llreveInp)
       throwError err500
 
 llreveDynamicBinary :: String
@@ -282,30 +285,6 @@ parseLlreveDynamicResult output =
   if "The programs have been proven equivalent" `elem` Text.lines output
     then Equivalent
     else Unknown
-
-readProcessWithExitCode :: String -> [String] -> Text -> IO (ExitCode, Text)
-readProcessWithExitCode cmd args =
-  readCreateProcessWithExitCode (proc cmd args)
-
-readCreateProcessWithExitCode
-  :: CreateProcess
-  -> Text -- ^ standard input
-  -> IO (ExitCode, Text) -- ^ exitcode, interleaved stdout, stderr
-readCreateProcessWithExitCode cp input = do
-  (readEnd, writeEnd) <- createPipe
-  let cp_opts =
-        cp
-        { std_in = CreatePipe
-        , std_out = UseHandle writeEnd
-        , std_err = UseHandle writeEnd
-        }
-  withCreateProcess cp_opts $ \(Just inh) Nothing Nothing ph -> do
-    out <- decodeUtf8 <$> ByteString.hGetContents readEnd
-    hClose readEnd
-    unless (Text.null input) $ Text.hPutStr inh input
-    hClose inh
-    ex <- waitForProcess ph
-    return (ex, out)
 
 runLlreveDynamic
   :: FilePath
