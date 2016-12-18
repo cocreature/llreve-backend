@@ -281,8 +281,7 @@ runLlreveDynamic prog1 prog2 patterns smtPath = do
       ExitSuccess -> pure (Response (parseLlreveDynamicResult stderr) [])
       ExitFailure _
         -- TODO: logging support
-       -> do
-        throwError err500
+       -> throwError err500
 
 llreveAPI :: Proxy LlreveAPI
 llreveAPI = Proxy
