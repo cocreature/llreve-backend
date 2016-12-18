@@ -1,14 +1,15 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE FlexibleContexts #-}
 module Main where
 
 import           Control.Applicative
 import           Control.Concurrent.Sem
 import           Control.Monad.Except
 import           Control.Monad.IO.Class
-import           Control.Monad.Logger
+import qualified Control.Monad.Log as Log
+import           Control.Monad.Log hiding (Handler, Error)
 import           Control.Monad.Trans.Control
 import           Data.Aeson hiding (Error)
 import           Data.Monoid
@@ -89,11 +90,20 @@ instance ToJSON Response where
 
 type LlreveAPI = "llreve" :> ReqBody '[JSON] Request :> Post '[JSON] Response
 
+type LogMessage' = WithSeverity LogMessage
+
+data LogMessage
+  = LlreveMsg { llreveMsg :: !Text }
+  | Z3Msg { z3Msg :: !Text }
+  | HornameMsg { hornameMsg :: !Text }
+  deriving (Show, Eq, Ord)
+
 server :: Server LlreveAPI
 server (Request method (Pair prog1 prog2) patterns) =
-  enter (Nat runStderrLoggingT :: LoggingT Handler :~> Handler) $ server'
+  enter (Nat (\app -> runLoggingT app (liftIO . print))  :: LoggingT LogMessage' Handler :~> Handler) $
+  server'
   where
-    server' :: LoggingT Handler Response
+    server' :: LoggingT LogMessage' Handler Response
     server' =
       liftBaseOp2 (withSystemTempFile "prog1.c") $ \file1 prog1Handle ->
         liftBaseOp2 (withSystemTempFile "prog2.c") $ \file2 prog2Handle ->
@@ -113,16 +123,16 @@ server (Request method (Pair prog1 prog2) patterns) =
 llreveBinary :: String
 llreveBinary = "reve"
 
-runLlreve :: FilePath -> FilePath -> FilePath -> [String] -> LoggingT (ExceptT ServantErr IO) ()
+runLlreve
+  :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
+  => FilePath -> FilePath -> FilePath -> [String] -> m ()
 runLlreve prog1 prog2 smt llreveArgs = do
   (exit, out, err) <-
     liftIO $ readProcessWithExitCode "reve" (prog1 : prog2 : "-o" : smt : llreveArgs) ""
   case exit of
     ExitSuccess -> pure ()
     ExitFailure _ -> do
-      $(logError) "llreve failed"
-      $(logError) out
-      $(logError) err
+      logError (LlreveMsg "llreve failed")
       throwError err500
 
 z3Binary :: String
@@ -136,7 +146,9 @@ parseZ3Result output =
     Just (_, result, _) -> result
     Nothing -> Error
 
-runZ3 :: FilePath -> FilePath -> FilePath -> LoggingT (ExceptT ServantErr IO) Response
+runZ3
+  :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
+  => FilePath -> FilePath -> FilePath -> m Response
 runZ3 prog1 prog2 smt = do
   runLlreve prog1 prog2 smt ["-muz"]
   (exit, out, err) <-
@@ -149,13 +161,13 @@ runZ3 prog1 prog2 smt = do
           case extractRenamedInvariants smt smtInput "z3_output" out of
             Right invariants -> pure (Response Equivalent invariants)
             Left _ -> do
-              $(logError) "Couldn’t parse and rename invariants"
+              logError (HornameMsg "Couldn’t parse and rename invariants")
               pure (Response Equivalent [])
         NotEquivalent -> pure (Response NotEquivalent [])
         Unknown -> pure (Response Unknown [])
         Error -> pure (Response Error [])
     ExitFailure _ -> do
-      $(logError) "Z3 failed"
+      logError (Z3Msg "Z3 failed")
       throwError err500
 
 llreveAPI :: Proxy LlreveAPI
