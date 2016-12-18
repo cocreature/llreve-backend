@@ -20,6 +20,7 @@ import qualified Data.Text.IO as Text
 import           Debug.Trace
 import           Horname
 import           Network.Wai.Handler.Warp (run)
+import           Network.Wai.Middleware.Cors
 import           Network.Wai.Middleware.RequestLogger
 import           Servant
 import           System.Exit
@@ -287,4 +288,9 @@ llreveAPI :: Proxy LlreveAPI
 llreveAPI = Proxy
 
 main = do
-  run 8080 $ logStdoutDev $ serve llreveAPI server
+  run 8080 $
+    logStdoutDev $
+    cors
+      (const $
+       Just $ simpleCorsResourcePolicy {corsRequestHeaders = ["content-type"]}) $
+    serve llreveAPI server
