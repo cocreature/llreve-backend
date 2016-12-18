@@ -128,7 +128,7 @@ runLlreve
   => FilePath -> FilePath -> FilePath -> [String] -> m ()
 runLlreve prog1 prog2 smt llreveArgs = do
   (exit, out, err) <-
-    liftIO $ readProcessWithExitCode "reve" (prog1 : prog2 : "-o" : smt : llreveArgs) ""
+    liftIO $ readProcessWithExitCode llreveBinary (prog1 : prog2 : "-o" : smt : llreveArgs) ""
   case exit of
     ExitSuccess -> pure ()
     ExitFailure _ -> do
@@ -152,7 +152,8 @@ runZ3
 runZ3 prog1 prog2 smt = do
   runLlreve prog1 prog2 smt ["-muz"]
   (exit, out, err) <-
-    liftIO $ readProcessWithExitCode "z3" ["fixedpoint.engine=duality", smt] ""
+    liftIO $
+    readProcessWithExitCode z3Binary ["fixedpoint.engine=duality", smt] ""
   case exit of
     ExitSuccess -> do
       case parseZ3Result out of
