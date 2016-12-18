@@ -96,6 +96,7 @@ data LogMessage
   = LlreveMsg { llreveMsg :: !Text }
   | Z3Msg { z3Msg :: !Text }
   | HornameMsg { hornameMsg :: !Text }
+  | EldaricaMsg { eldaricaMsg :: !Text }
   deriving (Show, Eq, Ord)
 
 server :: Server LlreveAPI
@@ -117,7 +118,7 @@ server (Request method (Pair prog1 prog2) patterns) =
               hClose smtHandle
             case method of
               Z3 -> runZ3 file1 file2 smtFile
-              Eldarica -> pure (Response Error [])
+              Eldarica -> runEldarica file1 file2 smtFile
               Dynamic -> pure (Response Error [])
 
 llreveBinary :: String
@@ -128,7 +129,7 @@ runLlreve
   => FilePath -> FilePath -> FilePath -> [String] -> m ()
 runLlreve prog1 prog2 smt llreveArgs = do
   (exit, out, err) <-
-    liftIO $ readProcessWithExitCode llreveBinary (prog1 : prog2 : "-o" : smt : llreveArgs) ""
+    liftIO $ readProcessWithExitCode llreveBinary (prog1 : prog2 : "-o" : smt : "-inline-opts" : llreveArgs) ""
   case exit of
     ExitSuccess -> pure ()
     ExitFailure _ -> do
@@ -155,7 +156,7 @@ runZ3 prog1 prog2 smt = do
     liftIO $
     readProcessWithExitCode z3Binary ["fixedpoint.engine=duality", smt] ""
   case exit of
-    ExitSuccess -> do
+    ExitSuccess ->
       case parseZ3Result out of
         Equivalent -> do
           smtInput <- liftIO $ Text.readFile smt
@@ -169,6 +170,38 @@ runZ3 prog1 prog2 smt = do
         Error -> pure (Response Error [])
     ExitFailure _ -> do
       logError (Z3Msg "Z3 failed")
+      throwError err500
+
+eldaricaBinary :: String
+eldaricaBinary = "eld"
+
+parseEldaricaResult :: Text -> LlreveResult
+parseEldaricaResult output =
+  case findFirstInfix
+         (("sat" *> pure Equivalent) <|> ("unsat" *> pure NotEquivalent) <|>
+          ("unknown" *> pure Unknown))
+         output of
+    Just (_, result, _) -> result
+    Nothing -> Error
+
+runEldarica :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
+            => FilePath -> FilePath -> FilePath -> m Response
+runEldarica prog1 prog2 smt = do
+  runLlreve prog1 prog2 smt []
+  (exit, out, err) <-
+    liftIO $ readProcessWithExitCode eldaricaBinary ["-ssol", smt] ""
+  case exit of
+    ExitSuccess ->
+      case parseEldaricaResult out of
+        Equivalent -> do
+          smtInput <- liftIO $ Text.readFile smt
+          case extractRenamedInvariants smt smtInput "eldarica_output" out of
+            Right invariants -> pure (Response Equivalent invariants)
+            Left _ -> do
+              logError (HornameMsg "Couldn’t parse and rename invariants")
+              pure (Response Equivalent [])
+    ExitFailure _ -> do
+      logError (EldaricaMsg "Eldarica failed")
       throwError err500
 
 llreveAPI :: Proxy LlreveAPI
