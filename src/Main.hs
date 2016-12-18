@@ -16,6 +16,7 @@ import           Data.Proxy (Proxy)
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
+import           Horname
 import           Network.Wai.Handler.Warp (run)
 import           Network.Wai.Middleware.RequestLogger
 import           Servant
@@ -77,11 +78,14 @@ instance ToJSON LlreveResult where
   toJSON Unknown = "unknown"
   toJSON Error = "error"
 
-data Response =
-  Response !LlreveResult
+data Response = Response
+  { respResult :: !LlreveResult
+  , respInvariants :: ![DefineFun]
+  }
 
 instance ToJSON Response where
-  toJSON (Response result) = object ["result" .= result]
+  toJSON (Response result invariants) =
+    object ["result" .= result, "invariants" .= map ppDefineFun invariants]
 
 type LlreveAPI = "llreve" :> ReqBody '[JSON] Request :> Post '[JSON] Response
 
@@ -103,16 +107,14 @@ server (Request method (Pair prog1 prog2) patterns) =
               hClose smtHandle
             case method of
               Z3 -> runZ3 file1 file2 smtFile
-              Eldarica -> pure (Response Error)
-              Dynamic -> pure (Response Error)
+              Eldarica -> pure (Response Error [])
+              Dynamic -> pure (Response Error [])
 
 llreveBinary :: String
 llreveBinary = "reve"
 
 runLlreve :: FilePath -> FilePath -> FilePath -> [String] -> LoggingT (ExceptT ServantErr IO) ()
 runLlreve prog1 prog2 smt llreveArgs = do
-  liftIO $ putStrLn prog1
-  liftIO $ putStrLn prog2
   (exit, out, err) <-
     liftIO $ readProcessWithExitCode "reve" (prog1 : prog2 : "-o" : smt : llreveArgs) ""
   case exit of
@@ -132,7 +134,7 @@ parseZ3Result output =
          (("unsat" *> pure Equivalent) <|> ("sat" *> pure NotEquivalent))
          output of
     Just (_, result, _) -> result
-    Nothing -> Unknown
+    Nothing -> Error
 
 runZ3 :: FilePath -> FilePath -> FilePath -> LoggingT (ExceptT ServantErr IO) Response
 runZ3 prog1 prog2 smt = do
@@ -141,12 +143,17 @@ runZ3 prog1 prog2 smt = do
     liftIO $ readProcessWithExitCode "z3" ["fixedpoint.engine=duality", smt] ""
   case exit of
     ExitSuccess -> do
-      case findFirstInfix (string "unsat") out of
-        Nothing ->
-          case findFirstInfix (string "sat") out of
-            Nothing -> pure (Response Unknown)
-            Just _ -> pure (Response NotEquivalent)
-        Just _ -> pure (Response Equivalent)
+      case parseZ3Result out of
+        Equivalent -> do
+          smtInput <- liftIO $ Text.readFile smt
+          case extractRenamedInvariants smt smtInput "z3_output" out of
+            Right invariants -> pure (Response Equivalent invariants)
+            Left _ -> do
+              $(logError) "Couldn’t parse and rename invariants"
+              pure (Response Equivalent [])
+        NotEquivalent -> pure (Response NotEquivalent [])
+        Unknown -> pure (Response Unknown [])
+        Error -> pure (Response Error [])
     ExitFailure _ -> do
       $(logError) "Z3 failed"
       throwError err500

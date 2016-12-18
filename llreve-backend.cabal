@@ -32,3 +32,4 @@ executable llreve-backend
                      , process-extras >= 0.4 && < 0.8
                      , monad-logger >= 0.3 && < 0.4
                      , regex-applicative-text >= 0.1 && < 0.2
+                     , horname >= 0.1 && < 0.2
