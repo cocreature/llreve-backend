@@ -6,16 +6,19 @@ module Main where
 
 import           Control.Applicative
 import           Control.Concurrent.Sem
+import           Control.Monad
 import           Control.Monad.Except
 import           Control.Monad.IO.Class
 import qualified Control.Monad.Log as Log
 import           Control.Monad.Log hiding (Handler, Error)
 import           Control.Monad.Trans.Control
 import           Data.Aeson hiding (Error)
+import qualified Data.ByteString as ByteString
 import           Data.Monoid
 import           Data.Proxy (Proxy)
 import           Data.Text (Text)
 import qualified Data.Text as Text
+import           Data.Text.Encoding
 import qualified Data.Text.IO as Text
 import           Debug.Trace
 import           Horname
@@ -26,7 +29,7 @@ import           Servant
 import           System.Exit
 import           System.IO (hClose)
 import           System.IO.Temp
-import           System.Process.Text
+import           System.Process hiding (readProcessWithExitCode, readCreateProcessWithExitCode)
 import           Text.Regex.Applicative.Text
 
 maxQueuedReqs :: Int
@@ -109,8 +112,7 @@ data LlreveInput = LlreveInput
   } deriving (Show, Eq, Ord)
 
 data ProgramOutput = ProgramOutput
-  { progStdout :: !Text
-  , progStderr :: !Text
+  { progOut :: !Text
   } deriving (Show, Eq, Ord)
 
 data LogMessage
@@ -157,23 +159,19 @@ llreveBinary = "llreve"
 
 runLlreve
   :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
-  => FilePath -> FilePath -> FilePath -> [String] -> m ()
+  => FilePath -> FilePath -> FilePath -> [String] -> m Text
 runLlreve prog1 prog2 smt llreveArgs = do
-  (exit, llreveStdout, llreveStderr) <-
+  (exit, llreveOut) <-
     liftIO $
     readProcessWithExitCode
       llreveBinary
       (prog1 : prog2 : "-o" : smt : "-inline-opts" : llreveArgs)
       ""
   case exit of
-    ExitSuccess -> pure ()
+    ExitSuccess -> pure llreveOut
     ExitFailure _ -> do
       llreveInp <- llreveInput prog1 prog2
-      logError
-        (LlreveMsg
-           "llreve failed"
-           (ProgramOutput llreveStdout llreveStderr)
-           llreveInp)
+      logError (LlreveMsg "llreve failed" (ProgramOutput llreveOut) llreveInp)
       throwError err500
 
 z3Binary :: String
@@ -213,21 +211,20 @@ runZ3
   :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
   => FilePath -> FilePath -> FilePath -> m Response
 runZ3 prog1 prog2 smtPath = do
-  runLlreve prog1 prog2 smtPath ["-muz"]
-  (exit, z3Stdout, z3Stderr) <-
+  llreveOut <- runLlreve prog1 prog2 smtPath ["-muz"]
+  (exit, z3Out) <-
     liftIO $
     readProcessWithExitCode z3Binary ["fixedpoint.engine=duality", smtPath] ""
   case exit of
     ExitSuccess -> do
-      let result = parseZ3Result z3Stdout
-      invariants <- findInvariants (parseZ3Result z3Stdout) smtPath z3Stdout
+      let result = parseZ3Result z3Out
+      invariants <- findInvariants result smtPath z3Out
       smt <- liftIO $ Text.readFile smtPath
-      pure (Response result "" z3Stdout smt invariants)
+      pure (Response result llreveOut z3Out smt invariants)
     ExitFailure _ -> do
       llreveInp <- llreveInput prog1 prog2
       smtInp <- liftIO $ Text.readFile smtPath
-      logError
-        (Z3Msg "Z3 failed" smtInp (ProgramOutput z3Stdout z3Stderr) llreveInp)
+      logError (Z3Msg "Z3 failed" smtInp (ProgramOutput z3Out) llreveInp)
       throwError err500
 
 eldaricaBinary :: String
@@ -245,22 +242,22 @@ parseEldaricaResult output =
 runEldarica :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
             => FilePath -> FilePath -> FilePath -> m Response
 runEldarica prog1 prog2 smtPath = do
-  runLlreve prog1 prog2 smtPath []
-  (exit, eldStdout, eldStderr) <-
+  llreveOut <- runLlreve prog1 prog2 smtPath []
+  (exit, eldOut) <-
     liftIO $ readProcessWithExitCode eldaricaBinary ["-ssol", smtPath] ""
   case exit of
     ExitSuccess -> do
-      let result = parseZ3Result eldStdout
-      invariants <- findInvariants (parseZ3Result eldStdout) smtPath eldStdout
+      let result = parseEldaricaResult eldOut
+      invariants <- findInvariants result smtPath eldOut
       smt <- liftIO $ Text.readFile smtPath
-      pure (Response result "" eldStdout smt invariants)
+      pure (Response result llreveOut eldOut smt invariants)
     ExitFailure _ -> do
       llreveInp <- llreveInput prog1 prog2
       smtInp <- liftIO $ Text.readFile smtPath
       logError
         (EldaricaMsg
            "Eldarica failed"
-           (ProgramOutput eldStdout eldStderr)
+           (ProgramOutput eldOut)
            llreveInp
            smtInp)
       throwError err500
@@ -270,10 +267,33 @@ llreveDynamicBinary = "llreve-dynamic"
 
 parseLlreveDynamicResult :: Text -> LlreveResult
 parseLlreveDynamicResult output =
-  if "The programs have been proven equivalent" `elem` (traceShowId $ Text.lines output) then
-    Equivalent
-  else
-    Unknown
+  if "The programs have been proven equivalent" `elem` Text.lines output
+    then Equivalent
+    else Unknown
+
+readProcessWithExitCode :: String -> [String] -> Text -> IO (ExitCode, Text)
+readProcessWithExitCode cmd args =
+  readCreateProcessWithExitCode (proc cmd args)
+
+readCreateProcessWithExitCode
+  :: CreateProcess
+  -> Text -- ^ standard input
+  -> IO (ExitCode, Text) -- ^ exitcode, interleaved stdout, stderr
+readCreateProcessWithExitCode cp input = do
+  (readEnd, writeEnd) <- createPipe
+  let cp_opts =
+        cp
+        { std_in = CreatePipe
+        , std_out = UseHandle writeEnd
+        , std_err = UseHandle writeEnd
+        }
+  withCreateProcess cp_opts $ \(Just inh) Nothing Nothing ph -> do
+    out <- decodeUtf8 <$> ByteString.hGetContents readEnd
+    hClose readEnd
+    unless (Text.null input) $ Text.hPutStr inh input
+    hClose inh
+    ex <- waitForProcess ph
+    return (ex, out)
 
 runLlreveDynamic
   :: FilePath
@@ -286,7 +306,7 @@ runLlreveDynamic prog1 prog2 patterns smtPath = do
     liftIO $ do
       Text.hPutStr patternHandle patterns
       hClose patternHandle
-    (exit, stdout, stderr) <-
+    (exit, outp) <-
       liftIO $
       readProcessWithExitCode
         llreveDynamicBinary
@@ -295,7 +315,7 @@ runLlreveDynamic prog1 prog2 patterns smtPath = do
     case exit of
       ExitSuccess -> do
         smt <- liftIO $ Text.readFile smtPath
-        pure (Response (parseLlreveDynamicResult stderr) "" "" smt [])
+        pure (Response (parseLlreveDynamicResult outp) outp "" smt [])
       ExitFailure _
         -- TODO: logging support
        -> throwError err500
