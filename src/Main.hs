@@ -17,6 +17,7 @@ import           Data.Proxy (Proxy)
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
+import           Debug.Trace
 import           Horname
 import           Network.Wai.Handler.Warp (run)
 import           Network.Wai.Middleware.RequestLogger
@@ -139,7 +140,7 @@ server (Request method (Pair prog1 prog2) patterns) =
             case method of
               Z3 -> runZ3 file1 file2 smtFile
               Eldarica -> runEldarica file1 file2 smtFile
-              Dynamic -> pure (Response Error [])
+              Dynamic -> runLlreveDynamic file1 file2 patterns smtFile
 
 llreveBinary :: String
 llreveBinary = "reve"
@@ -248,6 +249,40 @@ runEldarica prog1 prog2 smtPath = do
            llreveInp
            smtInp)
       throwError err500
+
+llreveDynamicBinary :: String
+llreveDynamicBinary = "llreve-dynamic"
+
+parseLlreveDynamicResult :: Text -> LlreveResult
+parseLlreveDynamicResult output =
+  if "The programs have been proven equivalent" `elem` (traceShowId $ Text.lines output) then
+    Equivalent
+  else
+    Unknown
+
+runLlreveDynamic
+  :: FilePath
+  -> FilePath
+  -> Text
+  -> FilePath
+  -> LoggingT LogMessage' Handler Response
+runLlreveDynamic prog1 prog2 patterns smtPath = do
+  liftBaseOp2 (withSystemTempFile "patterns") $ \patternFile patternHandle -> do
+    liftIO $ do
+      Text.hPutStr patternHandle patterns
+      hClose patternHandle
+    (exit, stdout, stderr) <-
+      liftIO $
+      readProcessWithExitCode
+        llreveDynamicBinary
+        [prog1, prog2, "-patterns", patternFile, "-o", smtPath]
+        ""
+    case exit of
+      ExitSuccess -> pure (Response (parseLlreveDynamicResult stderr) [])
+      ExitFailure _
+        -- TODO: logging support
+       -> do
+        throwError err500
 
 llreveAPI :: Proxy LlreveAPI
 llreveAPI = Proxy
