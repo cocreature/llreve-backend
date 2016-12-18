@@ -26,7 +26,7 @@ executable llreve-backend
                      , logging-effect >= 1.1 && < 1.2
                      , monad-control >= 1.0 && < 1.1
                      , mtl >= 2.1 && < 2.3
-                     , process >= 1.4 && < 1.5
+                     , process >= 1.4.3 && < 1.5
                      , regex-applicative-text >= 0.1 && < 0.2
                      , servant-server >= 0.8 && < 0.10
                      , stm >= 2.4 && < 2.5
