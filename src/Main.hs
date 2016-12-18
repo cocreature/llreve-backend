@@ -92,11 +92,31 @@ type LlreveAPI = "llreve" :> ReqBody '[JSON] Request :> Post '[JSON] Response
 
 type LogMessage' = WithSeverity LogMessage
 
+data LlreveInput = LlreveInput
+  { inpProgram1 :: !Text
+  , inpProgram2 :: !Text
+  } deriving (Show, Eq, Ord)
+
+data ProgramOutput = ProgramOutput
+  { progStdout :: !Text
+  , progStderr :: !Text
+  } deriving (Show, Eq, Ord)
+
 data LogMessage
-  = LlreveMsg { llreveMsg :: !Text }
-  | Z3Msg { z3Msg :: !Text }
-  | HornameMsg { hornameMsg :: !Text }
-  | EldaricaMsg { eldaricaMsg :: !Text }
+  = LlreveMsg { llreveMsg :: !Text
+             ,  llreveOutp :: !ProgramOutput
+             ,  llreveInp :: !LlreveInput}
+  | Z3Msg { z3Msg :: !Text
+         ,  z3Inp :: !Text
+         ,  z3Outp :: !ProgramOutput
+         ,  llreveInp :: !LlreveInput}
+  | HornameMsg { hornameMsg :: !Text
+              ,  hornameSolverInp :: !Text
+              ,  hornameSolverOutp :: !Text}
+  | EldaricaMsg { eldaricaMsg :: !Text
+               ,  eldOutp :: !ProgramOutput
+               ,  llreveInp :: !LlreveInput
+               ,  eldInput :: !Text}
   deriving (Show, Eq, Ord)
 
 server :: Server LlreveAPI
@@ -128,12 +148,21 @@ runLlreve
   :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
   => FilePath -> FilePath -> FilePath -> [String] -> m ()
 runLlreve prog1 prog2 smt llreveArgs = do
-  (exit, out, err) <-
-    liftIO $ readProcessWithExitCode llreveBinary (prog1 : prog2 : "-o" : smt : "-inline-opts" : llreveArgs) ""
+  (exit, llreveStdout, llreveStderr) <-
+    liftIO $
+    readProcessWithExitCode
+      llreveBinary
+      (prog1 : prog2 : "-o" : smt : "-inline-opts" : llreveArgs)
+      ""
   case exit of
     ExitSuccess -> pure ()
     ExitFailure _ -> do
-      logError (LlreveMsg "llreve failed")
+      llreveInp <- llreveInput prog1 prog2
+      logError
+        (LlreveMsg
+           "llreve failed"
+           (ProgramOutput llreveStdout llreveStderr)
+           llreveInp)
       throwError err500
 
 z3Binary :: String
@@ -147,29 +176,45 @@ parseZ3Result output =
     Just (_, result, _) -> result
     Nothing -> Error
 
+llreveInput :: MonadIO m => FilePath -> FilePath -> m LlreveInput
+llreveInput prog1 prog2 = do
+  liftIO $ LlreveInput <$> Text.readFile prog1 <*> Text.readFile prog2
+
+addInvariants
+  :: (MonadIO m, MonadLog LogMessage' m)
+  => LlreveResult -> FilePath -> Text -> m Response
+addInvariants result smtPath solverOutp =
+  case result of
+    Equivalent -> do
+      smtInput <- liftIO $ Text.readFile smtPath
+      case extractRenamedInvariants smtPath smtInput "z3_output" solverOutp of
+        Right invariants -> pure (Response Equivalent invariants)
+        Left _ -> do
+          logError
+            (HornameMsg
+               "Couldn’t parse and rename invariants"
+               smtInput
+               solverOutp)
+          pure (Response Equivalent [])
+    NotEquivalent -> pure (Response NotEquivalent [])
+    Unknown -> pure (Response Unknown [])
+    Error -> pure (Response Error [])
+
 runZ3
   :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
   => FilePath -> FilePath -> FilePath -> m Response
-runZ3 prog1 prog2 smt = do
-  runLlreve prog1 prog2 smt ["-muz"]
-  (exit, out, err) <-
+runZ3 prog1 prog2 smtPath = do
+  runLlreve prog1 prog2 smtPath ["-muz"]
+  (exit, z3Stdout, z3Stderr) <-
     liftIO $
-    readProcessWithExitCode z3Binary ["fixedpoint.engine=duality", smt] ""
+    readProcessWithExitCode z3Binary ["fixedpoint.engine=duality", smtPath] ""
   case exit of
-    ExitSuccess ->
-      case parseZ3Result out of
-        Equivalent -> do
-          smtInput <- liftIO $ Text.readFile smt
-          case extractRenamedInvariants smt smtInput "z3_output" out of
-            Right invariants -> pure (Response Equivalent invariants)
-            Left _ -> do
-              logError (HornameMsg "Couldn’t parse and rename invariants")
-              pure (Response Equivalent [])
-        NotEquivalent -> pure (Response NotEquivalent [])
-        Unknown -> pure (Response Unknown [])
-        Error -> pure (Response Error [])
+    ExitSuccess -> addInvariants (parseZ3Result z3Stdout) smtPath z3Stdout
     ExitFailure _ -> do
-      logError (Z3Msg "Z3 failed")
+      llreveInp <- llreveInput prog1 prog2
+      smtInp <- liftIO $ Text.readFile smtPath
+      logError
+        (Z3Msg "Z3 failed" smtInp (ProgramOutput z3Stdout z3Stderr) llreveInp)
       throwError err500
 
 eldaricaBinary :: String
@@ -186,22 +231,22 @@ parseEldaricaResult output =
 
 runEldarica :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
             => FilePath -> FilePath -> FilePath -> m Response
-runEldarica prog1 prog2 smt = do
-  runLlreve prog1 prog2 smt []
-  (exit, out, err) <-
-    liftIO $ readProcessWithExitCode eldaricaBinary ["-ssol", smt] ""
+runEldarica prog1 prog2 smtPath = do
+  runLlreve prog1 prog2 smtPath []
+  (exit, eldStdout, eldStderr) <-
+    liftIO $ readProcessWithExitCode eldaricaBinary ["-ssol", smtPath] ""
   case exit of
     ExitSuccess ->
-      case parseEldaricaResult out of
-        Equivalent -> do
-          smtInput <- liftIO $ Text.readFile smt
-          case extractRenamedInvariants smt smtInput "eldarica_output" out of
-            Right invariants -> pure (Response Equivalent invariants)
-            Left _ -> do
-              logError (HornameMsg "Couldn’t parse and rename invariants")
-              pure (Response Equivalent [])
+      addInvariants (parseEldaricaResult eldStdout) smtPath eldStdout
     ExitFailure _ -> do
-      logError (EldaricaMsg "Eldarica failed")
+      llreveInp <- llreveInput prog1 prog2
+      smtInp <- liftIO $ Text.readFile smtPath
+      logError
+        (EldaricaMsg
+           "Eldarica failed"
+           (ProgramOutput eldStdout eldStderr)
+           llreveInp
+           smtInp)
       throwError err500
 
 llreveAPI :: Proxy LlreveAPI
