@@ -83,12 +83,21 @@ instance ToJSON LlreveResult where
 
 data Response = Response
   { respResult :: !LlreveResult
+  , llreveOutput :: !Text
+  , solverOutput :: !Text
+  , smt :: !Text
   , respInvariants :: ![DefineFun]
   }
 
 instance ToJSON Response where
-  toJSON (Response result invariants) =
-    object ["result" .= result, "invariants" .= map ppDefineFun invariants]
+  toJSON (Response result llreve solver smt invariants) =
+    object
+      [ "result" .= result
+      , "invariants" .= map ppDefineFun invariants
+      , "llreve-output" .= llreve
+      , "solver-output" .= solver
+      , "smt" .= smt
+      ]
 
 type LlreveAPI = "llreve" :> ReqBody '[JSON] Request :> Post '[JSON] Response
 
@@ -182,25 +191,23 @@ llreveInput :: MonadIO m => FilePath -> FilePath -> m LlreveInput
 llreveInput prog1 prog2 = do
   liftIO $ LlreveInput <$> Text.readFile prog1 <*> Text.readFile prog2
 
-addInvariants
+findInvariants
   :: (MonadIO m, MonadLog LogMessage' m)
-  => LlreveResult -> FilePath -> Text -> m Response
-addInvariants result smtPath solverOutp =
+  => LlreveResult -> FilePath -> Text -> m [DefineFun]
+findInvariants result smtPath solverOutp =
   case result of
     Equivalent -> do
       smtInput <- liftIO $ Text.readFile smtPath
       case extractRenamedInvariants smtPath smtInput "z3_output" solverOutp of
-        Right invariants -> pure (Response Equivalent invariants)
+        Right invariants -> pure invariants
         Left _ -> do
           logError
             (HornameMsg
                "Couldn’t parse and rename invariants"
                smtInput
                solverOutp)
-          pure (Response Equivalent [])
-    NotEquivalent -> pure (Response NotEquivalent [])
-    Unknown -> pure (Response Unknown [])
-    Error -> pure (Response Error [])
+          pure []
+    _ -> pure []
 
 runZ3
   :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
@@ -211,7 +218,11 @@ runZ3 prog1 prog2 smtPath = do
     liftIO $
     readProcessWithExitCode z3Binary ["fixedpoint.engine=duality", smtPath] ""
   case exit of
-    ExitSuccess -> addInvariants (parseZ3Result z3Stdout) smtPath z3Stdout
+    ExitSuccess -> do
+      let result = parseZ3Result z3Stdout
+      invariants <- findInvariants (parseZ3Result z3Stdout) smtPath z3Stdout
+      smt <- liftIO $ Text.readFile smtPath
+      pure (Response result "" z3Stdout smt invariants)
     ExitFailure _ -> do
       llreveInp <- llreveInput prog1 prog2
       smtInp <- liftIO $ Text.readFile smtPath
@@ -238,8 +249,11 @@ runEldarica prog1 prog2 smtPath = do
   (exit, eldStdout, eldStderr) <-
     liftIO $ readProcessWithExitCode eldaricaBinary ["-ssol", smtPath] ""
   case exit of
-    ExitSuccess ->
-      addInvariants (parseEldaricaResult eldStdout) smtPath eldStdout
+    ExitSuccess -> do
+      let result = parseZ3Result eldStdout
+      invariants <- findInvariants (parseZ3Result eldStdout) smtPath eldStdout
+      smt <- liftIO $ Text.readFile smtPath
+      pure (Response result "" eldStdout smt invariants)
     ExitFailure _ -> do
       llreveInp <- llreveInput prog1 prog2
       smtInp <- liftIO $ Text.readFile smtPath
@@ -279,7 +293,9 @@ runLlreveDynamic prog1 prog2 patterns smtPath = do
         [prog1, prog2, "-patterns", patternFile, "-o", smtPath]
         ""
     case exit of
-      ExitSuccess -> pure (Response (parseLlreveDynamicResult stderr) [])
+      ExitSuccess -> do
+        smt <- liftIO $ Text.readFile smtPath
+        pure (Response (parseLlreveDynamicResult stderr) "" "" smt [])
       ExitFailure _
         -- TODO: logging support
        -> throwError err500
