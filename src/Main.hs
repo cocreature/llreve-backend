@@ -46,7 +46,8 @@ liftBaseOp2 :: MonadBaseControl b m
             -> ((a -> a' ->        m c)  ->        m d)
 liftBaseOp2 f = \g -> control $ \runInBase -> f $ \a a' -> runInBase (g a a')
 
-data Method = Z3 | Eldarica | Dynamic
+data SMTSolver = Eldarica | Z3
+data Method = Solver !SMTSolver | Dynamic
 
 -- | Strict pair
 data StrictPair a b = Pair !a !b deriving (Show, Eq, Ord)
@@ -58,8 +59,8 @@ data Request = Request
   }
 
 instance FromJSON Method where
-  parseJSON "z3" = pure Z3
-  parseJSON "eldarica" = pure Eldarica
+  parseJSON "z3" = pure (Solver Z3)
+  parseJSON "eldarica" = pure (Solver Eldarica)
   parseJSON "dynamic" = pure Dynamic
   parseJSON _ = empty
 
@@ -132,9 +133,14 @@ data LogMessage
                ,  eldInput :: !Text}
   deriving (Show, Eq, Ord)
 
+llreveArgsForSolver :: SMTSolver -> [String]
+llreveArgsForSolver Z3 = ["-muz"]
+llreveArgsForSolver Eldarica = []
+
 server :: Server LlreveAPI
 server (Request method (Pair prog1 prog2) patterns) =
-  enter (Nat (\app -> runLoggingT app (liftIO . print))  :: LoggingT LogMessage' Handler :~> Handler) $
+  enter
+    (Nat (\app -> runLoggingT app (liftIO . print)) :: LoggingT LogMessage' Handler :~> Handler) $
   server'
   where
     server' :: LoggingT LogMessage' Handler Response
@@ -150,16 +156,24 @@ server (Request method (Pair prog1 prog2) patterns) =
               hClose prog2Handle
               hClose smtHandle
             case method of
-              Z3 -> runZ3 file1 file2 smtFile
-              Eldarica -> runEldarica file1 file2 smtFile
+              Solver solver -> do
+                resp <-
+                  runLlreve file1 file2 smtFile (llreveArgsForSolver solver)
+                case resp of
+                  Left resp -> pure resp
+                  Right llreveOutp ->
+                    case solver of
+                      Z3 -> runZ3 file1 file2 smtFile llreveOutp
+                      Eldarica -> runEldarica file1 file2 smtFile llreveOutp
               Dynamic -> runLlreveDynamic file1 file2 patterns smtFile
 
 llreveBinary :: String
 llreveBinary = "llreve"
 
+-- In the case of an error Left is returned
 runLlreve
   :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
-  => FilePath -> FilePath -> FilePath -> [String] -> m Text
+  => FilePath -> FilePath -> FilePath -> [String] -> m (Either Response Text)
 runLlreve prog1 prog2 smt llreveArgs = do
   (exit, llreveOut) <-
     liftIO $
@@ -168,11 +182,11 @@ runLlreve prog1 prog2 smt llreveArgs = do
       (prog1 : prog2 : "-o" : smt : "-inline-opts" : llreveArgs)
       ""
   case exit of
-    ExitSuccess -> pure llreveOut
+    ExitSuccess -> pure (Right llreveOut)
     ExitFailure _ -> do
       llreveInp <- llreveInput prog1 prog2
       logError (LlreveMsg "llreve failed" (ProgramOutput llreveOut) llreveInp)
-      throwError err500
+      pure (Left (Response Error llreveOut "" "" []))
 
 z3Binary :: String
 z3Binary = "z3"
@@ -209,9 +223,8 @@ findInvariants result smtPath solverOutp =
 
 runZ3
   :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
-  => FilePath -> FilePath -> FilePath -> m Response
-runZ3 prog1 prog2 smtPath = do
-  llreveOut <- runLlreve prog1 prog2 smtPath ["-muz"]
+  => FilePath -> FilePath -> FilePath -> Text -> m Response
+runZ3 prog1 prog2 smtPath llreveOutp = do
   (exit, z3Out) <-
     liftIO $
     readProcessWithExitCode z3Binary ["fixedpoint.engine=duality", smtPath] ""
@@ -220,7 +233,7 @@ runZ3 prog1 prog2 smtPath = do
       let result = parseZ3Result z3Out
       invariants <- findInvariants result smtPath z3Out
       smt <- liftIO $ Text.readFile smtPath
-      pure (Response result llreveOut z3Out smt invariants)
+      pure (Response result llreveOutp z3Out smt invariants)
     ExitFailure _ -> do
       llreveInp <- llreveInput prog1 prog2
       smtInp <- liftIO $ Text.readFile smtPath
@@ -240,9 +253,8 @@ parseEldaricaResult output =
     Nothing -> Error
 
 runEldarica :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
-            => FilePath -> FilePath -> FilePath -> m Response
-runEldarica prog1 prog2 smtPath = do
-  llreveOut <- runLlreve prog1 prog2 smtPath []
+            => FilePath -> FilePath -> FilePath -> Text -> m Response
+runEldarica prog1 prog2 smtPath llreveOutp = do
   (exit, eldOut) <-
     liftIO $ readProcessWithExitCode eldaricaBinary ["-ssol", smtPath] ""
   case exit of
@@ -250,7 +262,7 @@ runEldarica prog1 prog2 smtPath = do
       let result = parseEldaricaResult eldOut
       invariants <- findInvariants result smtPath eldOut
       smt <- liftIO $ Text.readFile smtPath
-      pure (Response result llreveOut eldOut smt invariants)
+      pure (Response result llreveOutp eldOut smt invariants)
     ExitFailure _ -> do
       llreveInp <- llreveInput prog1 prog2
       smtInp <- liftIO $ Text.readFile smtPath
