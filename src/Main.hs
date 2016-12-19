@@ -152,7 +152,7 @@ runLlreveDynamic prog1 prog2 patterns smtPath includeDir = do
       hClose patternHandle
     processResult <-
       liftIO $
-      timeout (maxTimeout * (10 ^ 6)) $
+      timeout (maxTimeout * (10 ^ (6 :: Int))) $
       readProcessWithExitCode
         llreveDynamicBinary
         ([prog1, prog2, "-patterns", patternFile, "-o", smtPath] ++ includeArgs)
