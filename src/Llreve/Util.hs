@@ -37,9 +37,9 @@ readCreateProcessWithExitCode cp input =
           , std_err = UseHandle writeEnd
           }
     withCreateProcess cp_opts $ \(Just inh) Nothing Nothing ph -> do
-      out <- Text.decodeUtf8 <$> ByteString.hGetContents readEnd
-      hClose readEnd
       unless (Text.null input) $ Text.hPutStr inh input
       hClose inh
+      out <- Text.decodeUtf8 <$> ByteString.hGetContents readEnd
+      hClose readEnd
       ex <- waitForProcess ph
       return (ex, out)
