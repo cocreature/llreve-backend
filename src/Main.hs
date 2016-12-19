@@ -22,12 +22,10 @@ import           Servant
 import           System.Exit
 import           System.IO (hClose)
 import           System.IO.Temp
+import           System.Timeout
 
 maxQueuedReqs :: Int
 maxQueuedReqs = 5
-
-maxTimeout :: Int
-maxTimeout = 15
 
 maxConcurrentReqs :: Int
 maxConcurrentReqs = 2
@@ -100,7 +98,8 @@ server includeDir (Request method (Pair prog1 prog2) patterns) =
                       smtFile
                       llreveOut
                       (solverConfig solver)
-              Dynamic -> runLlreveDynamic file1 file2 patterns smtFile
+              Dynamic ->
+                runLlreveDynamic file1 file2 patterns smtFile includeDir
 
 llreveBinary :: String
 llreveBinary = "llreve"
@@ -144,25 +143,37 @@ runLlreveDynamic
   -> FilePath
   -> Text
   -> FilePath
+  -> Maybe String
   -> LoggingT LogMessage' Handler Response
-runLlreveDynamic prog1 prog2 patterns smtPath = do
+runLlreveDynamic prog1 prog2 patterns smtPath includeDir = do
   liftBaseOp2 (withSystemTempFile "patterns") $ \patternFile patternHandle -> do
     liftIO $ do
       Text.hPutStr patternHandle patterns
       hClose patternHandle
-    (exit, outp) <-
+    processResult <-
       liftIO $
+      timeout (maxTimeout * (10 ^ 6)) $
       readProcessWithExitCode
         llreveDynamicBinary
-        [prog1, prog2, "-patterns", patternFile, "-o", smtPath]
+        ([prog1, prog2, "-patterns", patternFile, "-o", smtPath] ++ includeArgs)
         ""
-    case exit of
-      ExitSuccess -> do
-        smtFile <- liftIO $ Text.readFile smtPath
-        pure (Response (parseLlreveDynamicResult outp) outp "" smtFile [])
-      ExitFailure _
-        -- TODO: logging support
-       -> throwError err500
+    case processResult of
+      Nothing -> do
+        pure (Response Timeout "" "" "" [])
+      Just (exit, outp) ->
+        case exit of
+          ExitSuccess -> do
+            smtFile <- liftIO $ Text.readFile smtPath
+            pure (Response (parseLlreveDynamicResult outp) outp "" smtFile [])
+          ExitFailure _
+             -- TODO: logging support
+           -> pure (Response Error outp "" "" [])
+  where
+    includeArgs :: [String]
+    includeArgs =
+      case includeDir of
+        Nothing -> []
+        Just dir -> ["-I", dir]
 
 llreveAPI :: Proxy LlreveAPI
 llreveAPI = Proxy

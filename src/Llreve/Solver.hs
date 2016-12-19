@@ -4,6 +4,7 @@ module Llreve.Solver where
 
 import           Control.Monad.Except
 import           Control.Monad.Log hiding (Error)
+import           Data.Monoid
 import           Data.Text (Text)
 import qualified Data.Text.IO as Text
 import           Horname
@@ -12,6 +13,9 @@ import           Llreve.Util
 import           Servant
 import           System.Exit
 import           Text.Regex.Applicative.Text
+
+maxTimeout :: Int
+maxTimeout = 15
 
 data SMTSolver
   = Eldarica
@@ -49,14 +53,22 @@ data SolverConfig = SolverCfg
 
 solverConfig :: SMTSolver -> SolverConfig
 solverConfig Z3 =
-  SolverCfg z3Binary parseZ3Result (: ["fixedpoint.engine=duality"]) Z3Msg
+  SolverCfg
+    z3Binary
+    parseZ3Result
+    (: ["fixedpoint.engine=duality", "-T:" <> show maxTimeout])
+    Z3Msg
 solverConfig Eldarica =
-  SolverCfg eldaricaBinary parseEldaricaResult (: ["-ssol"]) EldaricaMsg
+  SolverCfg
+    eldaricaBinary
+    parseEldaricaResult
+    (: ["-ssol", "-t:" <> show maxTimeout])
+    EldaricaMsg
 
 runSolver
   :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
   => FilePath -> FilePath -> FilePath -> Text -> SolverConfig -> m Response
-runSolver prog1 prog2 smtPath llreveOutp solver = do
+runSolver prog1 prog2 smtPath llreveOut solver = do
   (exit, solverOutp) <-
     liftIO $
     readProcessWithExitCode
@@ -67,10 +79,10 @@ runSolver prog1 prog2 smtPath llreveOutp solver = do
     ExitSuccess -> do
       let result = solverParseResult solver solverOutp
       invariants <- findInvariants result smtPath solverOutp
-      smt <- liftIO $ Text.readFile smtPath
-      pure (Response result llreveOutp solverOutp smt invariants)
+      smt' <- liftIO $ Text.readFile smtPath
+      pure (Response result llreveOut solverOutp smt' invariants)
     ExitFailure _ -> do
-      llreveInp <- llreveInput prog1 prog2
+      llreveIn <- llreveInput prog1 prog2
       smtInp <- liftIO $ Text.readFile smtPath
       logError
         (solverLogMsg
@@ -78,7 +90,7 @@ runSolver prog1 prog2 smtPath llreveOutp solver = do
            "Non-zero exit code"
            (SMTFile smtInp)
            (ProgramOutput solverOutp)
-           llreveInp)
+           llreveIn)
       throwError err500
 
 findInvariants
