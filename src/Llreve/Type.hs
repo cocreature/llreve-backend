@@ -68,11 +68,11 @@ data Response = Response
   }
 
 instance ToJSON Response where
-  toJSON (Response result llreve solver smt invariants) =
+  toJSON (Response result llreve solver smt' invariants) =
     object
       [ "result" .= result
       , "invariants" .= map ppDefineFun invariants
       , "llreve-output" .= llreve
       , "solver-output" .= solver
-      , "smt" .= smt
+      , "smt" .= smt'
       ]
