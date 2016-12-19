@@ -26,6 +26,7 @@ instance ToJSON LlreveResult where
   toJSON NotEquivalent = "not-equivalent"
   toJSON Unknown = "unknown"
   toJSON Error = "error"
+  toJSON Timeout = "timeout"
 
 data LlreveInput = LlreveInput
   { inpProgram1 :: !Text
