@@ -64,8 +64,8 @@ llreveArgsForSolver :: SMTSolver -> [String]
 llreveArgsForSolver Z3 = ["-muz"]
 llreveArgsForSolver Eldarica = []
 
-server :: Server LlreveAPI
-server (Request method (Pair prog1 prog2) patterns) =
+server :: Maybe String -> Server LlreveAPI
+server includeDir (Request method (Pair prog1 prog2) patterns) =
   enter
     (Nat (\app -> runLoggingT app (liftIO . print)) :: LoggingT LogMessage' Handler :~> Handler) $
   server'
@@ -85,7 +85,12 @@ server (Request method (Pair prog1 prog2) patterns) =
             case method of
               Solver solver -> do
                 resp <-
-                  runLlreve file1 file2 smtFile (llreveArgsForSolver solver)
+                  runLlreve
+                    file1
+                    file2
+                    smtFile
+                    (llreveArgsForSolver solver)
+                    includeDir
                 case resp of
                   Left resp' -> pure resp'
                   Right llreveOut ->
@@ -103,13 +108,14 @@ llreveBinary = "llreve"
 -- In the case of an error Left is returned
 runLlreve
   :: (MonadIO m, MonadLog LogMessage' m)
-  => FilePath -> FilePath -> FilePath -> [String] -> m (Either Response Text)
-runLlreve prog1 prog2 smtPath llreveArgs = do
+  => FilePath -> FilePath -> FilePath -> [String] -> Maybe String -> m (Either Response Text)
+runLlreve prog1 prog2 smtPath llreveArgs includeDir = do
   (exit, llreveOut) <-
     liftIO $
     readProcessWithExitCode
       llreveBinary
-      (prog1 : prog2 : "-o" : smtPath : "-inline-opts" : llreveArgs)
+      (prog1 :
+       prog2 : "-o" : smtPath : "-inline-opts" : includeArgs ++ llreveArgs)
       ""
   case exit of
     ExitSuccess -> pure (Right llreveOut)
@@ -117,6 +123,12 @@ runLlreve prog1 prog2 smtPath llreveArgs = do
       llreveIn <- llreveInput prog1 prog2
       logError (LlreveMsg "llreve failed" (ProgramOutput llreveOut) llreveIn)
       pure (Left (Response Error llreveOut "" "" []))
+  where
+    includeArgs :: [String]
+    includeArgs =
+      case includeDir of
+        Nothing -> []
+        Just dir -> ["-I", dir]
 
 llreveDynamicBinary :: String
 llreveDynamicBinary = "llreve-dynamic"
@@ -157,9 +169,10 @@ llreveAPI = Proxy
 
 main :: IO ()
 main = do
+  includeDir <- getStddefIncludeDir
   run 8080 $
     logStdoutDev $
     cors
       (const $
        Just $ simpleCorsResourcePolicy {corsRequestHeaders = ["content-type"]}) $
-    serve llreveAPI server
+    serve llreveAPI (server includeDir)

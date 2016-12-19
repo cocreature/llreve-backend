@@ -1,6 +1,8 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Llreve.Util
   ( liftBaseOp2
   , readProcessWithExitCode
+  , getStddefIncludeDir
   ) where
 
 import           Control.Exception
@@ -14,6 +16,7 @@ import qualified Data.Text.IO as Text
 import           System.Exit
 import           System.IO
 import           System.Process hiding (readProcessWithExitCode, readCreateProcessWithExitCode)
+import           Text.Regex.Applicative.Text
 
 liftBaseOp2 :: MonadBaseControl b m
             => ((a -> a' -> b (StM m c)) -> b (StM m d))
@@ -43,3 +46,12 @@ readCreateProcessWithExitCode cp input =
       hClose readEnd
       ex <- waitForProcess ph
       return (ex, out)
+
+getStddefIncludeDir :: IO (Maybe String)
+getStddefIncludeDir = do
+  (_, outp) <- readProcessWithExitCode "gcc" ["-E", "-"] "#include<stddef.h>\n"
+  case findFirstInfix
+         (sym '"' *> many (psym (/= '"')) <* "stddef.h" <* sym '"')
+         outp of
+    Nothing -> pure Nothing
+    Just (_, includeDir, _) -> pure (Just includeDir)
