@@ -3,8 +3,9 @@ module Llreve.Util
   , readProcessWithExitCode
   ) where
 
-import           Control.Monad.Trans.Control
+import           Control.Exception
 import           Control.Monad
+import           Control.Monad.Trans.Control
 import qualified Data.ByteString as ByteString
 import           Data.Text (Text)
 import qualified Data.Text as Text
@@ -27,18 +28,18 @@ readCreateProcessWithExitCode
   :: CreateProcess
   -> Text -- ^ standard input
   -> IO (ExitCode, Text) -- ^ exitcode, interleaved stdout, stderr
-readCreateProcessWithExitCode cp input = do
-  (readEnd, writeEnd) <- createPipe
-  let cp_opts =
-        cp
-        { std_in = CreatePipe
-        , std_out = UseHandle writeEnd
-        , std_err = UseHandle writeEnd
-        }
-  withCreateProcess cp_opts $ \(Just inh) Nothing Nothing ph -> do
-    out <- Text.decodeUtf8 <$> ByteString.hGetContents readEnd
-    hClose readEnd
-    unless (Text.null input) $ Text.hPutStr inh input
-    hClose inh
-    ex <- waitForProcess ph
-    return (ex, out)
+readCreateProcessWithExitCode cp input =
+  bracket createPipe (\(readEnd, writeEnd) -> hClose readEnd >> hClose writeEnd) $ \(readEnd, writeEnd) -> do
+    let cp_opts =
+          cp
+          { std_in = CreatePipe
+          , std_out = UseHandle writeEnd
+          , std_err = UseHandle writeEnd
+          }
+    withCreateProcess cp_opts $ \(Just inh) Nothing Nothing ph -> do
+      out <- Text.decodeUtf8 <$> ByteString.hGetContents readEnd
+      hClose readEnd
+      unless (Text.null input) $ Text.hPutStr inh input
+      hClose inh
+      ex <- waitForProcess ph
+      return (ex, out)
