@@ -10,7 +10,6 @@ import qualified Data.Text.IO as Text
 import           Horname
 import           Llreve.Type
 import           Llreve.Util
-import           Servant
 import           System.Exit
 import           Text.Regex.Applicative.Text
 
@@ -66,7 +65,7 @@ solverConfig Eldarica =
     EldaricaMsg
 
 runSolver
-  :: (MonadIO m, MonadError ServantErr m, MonadLog LogMessage' m)
+  :: (MonadIO m, MonadLog LogMessage' m)
   => FilePath -> FilePath -> FilePath -> Text -> SolverConfig -> m Response
 runSolver prog1 prog2 smtPath llreveOut solver = do
   (exit, solverOutp) <-
@@ -91,7 +90,7 @@ runSolver prog1 prog2 smtPath llreveOut solver = do
            (SMTFile smtInp)
            (ProgramOutput solverOutp)
            llreveIn)
-      throwError err500
+      pure (Response Error llreveOut solverOutp smtInp [])
 
 findInvariants
   :: (MonadIO m, MonadLog LogMessage' m)

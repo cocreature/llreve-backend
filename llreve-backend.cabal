@@ -38,4 +38,5 @@ executable llreve-backend
                      , wai-cors >= 0.2 && < 0.3
                      , wai-extra >= 3.0 && < 3.1
                      , warp >= 3.2 && < 3.3
+                     , exceptions >= 0.8 && < 0.9
   ghc-options:         -Wall

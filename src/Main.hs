@@ -5,8 +5,12 @@
 module Main where
 
 import           Control.Applicative
+import           Control.Concurrent.Sem
+import           Control.Monad.Catch hiding (Handler)
 import           Control.Monad.Except
+import qualified Control.Monad.Log as Log
 import           Control.Monad.Log hiding (Handler, Error)
+import           Control.Monad.Trans.Control
 import           Data.Aeson hiding (Error)
 import           Data.Proxy (Proxy)
 import           Data.Text (Text)
@@ -62,44 +66,58 @@ llreveArgsForSolver :: SMTSolver -> [String]
 llreveArgsForSolver Z3 = ["-muz"]
 llreveArgsForSolver Eldarica = []
 
-server :: Maybe String -> Server LlreveAPI
-server includeDir (Request method (Pair prog1 prog2) patterns) =
-  enter
-    (Nat (\app -> runLoggingT app (liftIO . print)) :: LoggingT LogMessage' Handler :~> Handler) $
-  server'
-  where
-    server' :: LoggingT LogMessage' Handler Response
-    server' =
-      liftBaseOp2 (withSystemTempFile "prog1.c") $ \file1 prog1Handle ->
-        liftBaseOp2 (withSystemTempFile "prog2.c") $ \file2 prog2Handle ->
-          liftBaseOp2 (withSystemTempFile "query.smt2") $ \smtFile smtHandle -> do
-            liftIO $ do
-              Text.hPutStr prog1Handle prog1
-              Text.hPutStr prog2Handle prog2
+-- Lifted version of mask because I don’t want to depend on lifted-base just for this function
+mask' :: MonadBaseControl IO m => ((m a -> m a) -> m b) -> m b
+mask' f = control $ \runInBase ->
+           mask $ \g -> runInBase $ f $ liftBaseOp_ g
+
+loggingHandler :: MonadIO m => Log.Handler m LogMessage'
+loggingHandler = liftIO . print
+
+withQueuedSem :: Sem -> LoggingT LogMessage' IO c -> Handler c
+withQueuedSem queuedReqs action = do
+  res <- liftIO $ mask $ \unmasked -> do
+    lock <- tryWaitSem queuedReqs
+    if lock
+      then do
+        result <- unmasked (runLoggingT action (liftIO . print)) `onException` (signalSem queuedReqs)
+        signalSem queuedReqs
+        return (Right result)
+      else pure (Left err503)
+  case res of
+    Right res' -> pure res'
+    Left err -> throwError err
+
+server :: Maybe String -> Sem  -> Sem -> Server LlreveAPI
+server includeDir queuedReqs concurrentReqs (Request method (Pair prog1 prog2) patterns) =
+  withQueuedSem queuedReqs $
+  withSystemTempFile "prog1.c" $ \file1 prog1Handle ->
+    withSystemTempFile "prog2.c" $ \file2 prog2Handle ->
+      withSystemTempFile "query.smt2" $ \smtFile smtHandle -> do
+        liftIO $ do
+          Text.hPutStr prog1Handle prog1
+          Text.hPutStr prog2Handle prog2
                 -- We can close these handles early
-              hClose prog1Handle
-              hClose prog2Handle
-              hClose smtHandle
-            case method of
-              Solver solver -> do
-                resp <-
-                  runLlreve
-                    file1
-                    file2
-                    smtFile
-                    (llreveArgsForSolver solver)
-                    includeDir
-                case resp of
-                  Left resp' -> pure resp'
-                  Right llreveOut ->
-                    runSolver
-                      file1
-                      file2
-                      smtFile
-                      llreveOut
-                      (solverConfig solver)
-              Dynamic ->
-                runLlreveDynamic file1 file2 patterns smtFile includeDir
+          hClose prog1Handle
+          hClose prog2Handle
+          hClose smtHandle
+        bracket_
+          (liftIO $ waitSem concurrentReqs)
+          (liftIO $ signalSem concurrentReqs) $
+          case method of
+            Solver solver -> do
+              resp <-
+                runLlreve
+                  file1
+                  file2
+                  smtFile
+                  (llreveArgsForSolver solver)
+                  includeDir
+              case resp of
+                Left resp' -> pure resp'
+                Right llreveOut ->
+                  runSolver file1 file2 smtFile llreveOut (solverConfig solver)
+            Dynamic -> runLlreveDynamic file1 file2 patterns smtFile includeDir
 
 llreveBinary :: String
 llreveBinary = "llreve"
@@ -139,14 +157,10 @@ parseLlreveDynamicResult output =
     else Unknown
 
 runLlreveDynamic
-  :: FilePath
-  -> FilePath
-  -> Text
-  -> FilePath
-  -> Maybe String
-  -> LoggingT LogMessage' Handler Response
+  :: (MonadIO m, MonadMask m)
+  => FilePath -> FilePath -> Text -> FilePath -> Maybe String -> m Response
 runLlreveDynamic prog1 prog2 patterns smtPath includeDir = do
-  liftBaseOp2 (withSystemTempFile "patterns") $ \patternFile patternHandle -> do
+  withSystemTempFile "patterns" $ \patternFile patternHandle -> do
     liftIO $ do
       Text.hPutStr patternHandle patterns
       hClose patternHandle
@@ -180,10 +194,12 @@ llreveAPI = Proxy
 
 main :: IO ()
 main = do
+  queuedReqsSem <- newSem maxQueuedReqs
+  concurrentReqsSem <- newSem maxConcurrentReqs
   includeDir <- getStddefIncludeDir
   run 8080 $
     logStdoutDev $
     cors
       (const $
        Just $ simpleCorsResourcePolicy {corsRequestHeaders = ["content-type"]}) $
-    serve llreveAPI (server includeDir)
+    serve llreveAPI (server includeDir queuedReqsSem concurrentReqsSem)
