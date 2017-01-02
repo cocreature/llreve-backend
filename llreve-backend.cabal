@@ -25,6 +25,7 @@ executable llreve-backend
   build-depends:       base >= 4.9 && < 5
                      , aeson >= 0.11 && < 0.12
                      , async >= 2.1 && < 2.2
+                     , lifted-async >= 0.9 && < 0.10
                      , bytestring >= 0.10 && < 0.11
                      , horname >= 0.1.2 && < 0.2
                      , logging-effect >= 1.1 && < 1.2

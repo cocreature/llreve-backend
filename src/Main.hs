@@ -5,6 +5,7 @@
 module Main where
 
 import           Control.Applicative
+import           Control.Concurrent.Async.Lifted
 import           Control.Concurrent.Sem
 import           Control.Monad.Catch hiding (Handler)
 import           Control.Monad.Except
@@ -26,15 +27,17 @@ import           Servant
 import           System.Exit
 import           System.IO (hClose)
 import           System.IO.Temp
-import           System.Timeout
 
 maxQueuedReqs :: Int
-maxQueuedReqs = 5
+maxQueuedReqs = 10
 
 maxConcurrentReqs :: Int
-maxConcurrentReqs = 2
+maxConcurrentReqs = 4
 
-data Method = Solver !SMTSolver | Dynamic
+data Method
+  = Solver !SMTSolver
+  | Dynamic
+  | Race
 
 -- | Strict pair
 data StrictPair a b = Pair !a !b deriving (Show, Eq, Ord)
@@ -49,6 +52,7 @@ instance FromJSON Method where
   parseJSON "z3" = pure (Solver Z3)
   parseJSON "eldarica" = pure (Solver Eldarica)
   parseJSON "dynamic" = pure Dynamic
+  parseJSON "race" = pure Race
   parseJSON _ = empty
 
 instance FromJSON Request where
@@ -118,6 +122,41 @@ server includeDir queuedReqs concurrentReqs (Request method (Pair prog1 prog2) p
                 Right llreveOut ->
                   runSolver file1 file2 smtFile llreveOut (solverConfig solver)
             Dynamic -> runLlreveDynamic file1 file2 patterns smtFile includeDir
+            Race -> raceResponse <$> raceSolvers file1 file2 patterns includeDir
+
+raceResponse :: RaceResult -> Response
+raceResponse (SolverResult _ resp) = resp
+raceResponse (LlreveDynamicResult resp) = resp
+
+data RaceResult
+  = SolverResult !SMTSolver
+                 !Response
+  | LlreveDynamicResult !Response
+
+raceSolvers
+  :: (MonadIO m, MonadLog LogMessage' m, MonadMask m, MonadBaseControl IO m)
+  => FilePath -> FilePath -> Text -> Maybe String -> m RaceResult
+raceSolvers prog1 prog2 patterns includeDir = do
+  either id LlreveDynamicResult <$>
+    race
+      raceSMTSolvers
+      (withSystemTempFile "query.smt2" $ \smtFile smtHandle -> do
+         liftIO $ hClose smtHandle
+         runLlreveDynamic prog1 prog2 patterns smtFile includeDir)
+  where
+    raceSMTSolvers =
+      either (SolverResult Eldarica) (SolverResult Z3) <$>
+      race (runSolver' Eldarica) (runSolver' Z3)
+    runSolver' solver = do
+      withSystemTempFile "query.smt2" $ \smtFile smtHandle -> do
+        liftIO $ hClose smtHandle
+        resp <-
+          runLlreve prog1 prog2 smtFile (llreveArgsForSolver solver) includeDir
+        case resp of
+          Left resp' -> pure resp'
+          Right llreveOut ->
+            runSolver prog1 prog2 smtFile llreveOut (solverConfig solver)
+
 
 llreveBinary :: String
 llreveBinary = "llreve"

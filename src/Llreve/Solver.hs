@@ -19,6 +19,7 @@ maxTimeout = 15
 data SMTSolver
   = Eldarica
   | Z3
+  deriving (Show, Eq, Ord)
 
 z3Binary :: String
 z3Binary = "z3"
