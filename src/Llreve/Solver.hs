@@ -16,11 +16,6 @@ import           Text.Regex.Applicative.Text
 maxTimeout :: Int
 maxTimeout = 15
 
-data SMTSolver
-  = Eldarica
-  | Z3
-  deriving (Show, Eq, Ord)
-
 z3Binary :: String
 z3Binary = "z3"
 
@@ -45,7 +40,8 @@ parseEldaricaResult output =
     Nothing -> Error
 
 data SolverConfig = SolverCfg
-  { solverBinaryPath :: String
+  { solver :: SMTSolver
+  , solverBinaryPath :: String
   , solverParseResult :: Text -> LlreveResult
   , solverArgs :: FilePath -> [String]
   , solverLogMsg :: Text -> SMTFile -> ProgramOutput -> LlreveInput -> LogMessage
@@ -54,12 +50,14 @@ data SolverConfig = SolverCfg
 solverConfig :: SMTSolver -> SolverConfig
 solverConfig Z3 =
   SolverCfg
+    Z3
     z3Binary
     parseZ3Result
     (: ["fixedpoint.engine=duality", "-T:" <> show maxTimeout])
     Z3Msg
 solverConfig Eldarica =
   SolverCfg
+    Eldarica
     eldaricaBinary
     parseEldaricaResult
     (: ["-ssol", "-t:" <> show maxTimeout])
@@ -68,30 +66,30 @@ solverConfig Eldarica =
 runSolver
   :: (MonadIO m, MonadLog LogMessage' m)
   => FilePath -> FilePath -> FilePath -> Text -> SolverConfig -> m Response
-runSolver prog1 prog2 smtPath llreveOut solver = do
+runSolver prog1 prog2 smtPath llreveOut solverConf = do
   (exit, solverOutp) <-
     liftIO $
     readProcessWithExitCode
-      (solverBinaryPath solver)
-      (solverArgs solver smtPath)
+      (solverBinaryPath solverConf)
+      (solverArgs solverConf smtPath)
       ""
   case exit of
     ExitSuccess -> do
-      let result = solverParseResult solver solverOutp
+      let result = solverParseResult solverConf solverOutp
       invariants <- findInvariants result smtPath solverOutp
       smt' <- liftIO $ Text.readFile smtPath
-      pure (Response result llreveOut solverOutp smt' invariants)
+      pure (Response result llreveOut solverOutp smt' invariants (SolverResponse (solver solverConf)))
     ExitFailure _ -> do
       llreveIn <- llreveInput prog1 prog2
       smtInp <- liftIO $ Text.readFile smtPath
       logError
         (solverLogMsg
-           solver
+           solverConf
            "Non-zero exit code"
            (SMTFile smtInp)
            (ProgramOutput solverOutp)
            llreveIn)
-      pure (Response Error llreveOut solverOutp smtInp [])
+      pure (Response Error llreveOut solverOutp smtInp [] (SolverResponse (solver solverConf)))
 
 findInvariants
   :: (MonadIO m, MonadLog LogMessage' m)

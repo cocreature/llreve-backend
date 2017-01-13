@@ -109,18 +109,19 @@ server includeDir queuedReqs concurrentReqs (Request method (Pair prog1 prog2) p
           (liftIO $ waitSem concurrentReqs)
           (liftIO $ signalSem concurrentReqs) $
           case method of
-            Solver solver -> do
+            Solver solver' -> do
               resp <-
                 runLlreve
                   file1
                   file2
                   smtFile
-                  (llreveArgsForSolver solver)
+                  (llreveArgsForSolver solver')
                   includeDir
+                  (SolverResponse solver')
               case resp of
                 Left resp' -> pure resp'
                 Right llreveOut ->
-                  runSolver file1 file2 smtFile llreveOut (solverConfig solver)
+                  runSolver file1 file2 smtFile llreveOut (solverConfig solver')
             Dynamic -> runLlreveDynamic file1 file2 patterns smtFile includeDir
             Race -> raceResponse <$> raceSolvers file1 file2 patterns includeDir
 
@@ -147,15 +148,15 @@ raceSolvers prog1 prog2 patterns includeDir = do
     raceSMTSolvers =
       either (SolverResult Eldarica) (SolverResult Z3) <$>
       race (runSolver' Eldarica) (runSolver' Z3)
-    runSolver' solver = do
+    runSolver' solver' = do
       withSystemTempFile "query.smt2" $ \smtFile smtHandle -> do
         liftIO $ hClose smtHandle
         resp <-
-          runLlreve prog1 prog2 smtFile (llreveArgsForSolver solver) includeDir
+          runLlreve prog1 prog2 smtFile (llreveArgsForSolver solver') includeDir (SolverResponse solver')
         case resp of
           Left resp' -> pure resp'
           Right llreveOut ->
-            runSolver prog1 prog2 smtFile llreveOut (solverConfig solver)
+            runSolver prog1 prog2 smtFile llreveOut (solverConfig solver')
 
 
 llreveBinary :: String
@@ -164,8 +165,8 @@ llreveBinary = "llreve"
 -- In the case of an error Left is returned
 runLlreve
   :: (MonadIO m, MonadLog LogMessage' m)
-  => FilePath -> FilePath -> FilePath -> [String] -> Maybe String -> m (Either Response Text)
-runLlreve prog1 prog2 smtPath llreveArgs includeDir = do
+  => FilePath -> FilePath -> FilePath -> [String] -> Maybe String -> ResponseMethod -> m (Either Response Text)
+runLlreve prog1 prog2 smtPath llreveArgs includeDir method = do
   (exit, llreveOut) <-
     liftIO $
     readProcessWithExitCode
@@ -178,7 +179,7 @@ runLlreve prog1 prog2 smtPath llreveArgs includeDir = do
     ExitFailure _ -> do
       llreveIn <- llreveInput prog1 prog2
       logError (LlreveMsg "llreve failed" (ProgramOutput llreveOut) llreveIn)
-      pure (Left (Response Error llreveOut "" "" []))
+      pure (Left (Response Error llreveOut "" "" [] method))
   where
     includeArgs :: [String]
     includeArgs =
@@ -211,15 +212,15 @@ runLlreveDynamic prog1 prog2 patterns smtPath includeDir = do
         ""
     case processResult of
       (output, Nothing) -> do
-        pure (Response Timeout output "" "" [])
+        pure (Response Timeout output "" "" [] DynamicResponse)
       (output, Just exit) ->
         case exit of
           ExitSuccess -> do
             smtFile <- liftIO $ Text.readFile smtPath
-            pure (Response (parseLlreveDynamicResult output) output "" smtFile [])
+            pure (Response (parseLlreveDynamicResult output) output "" smtFile [] DynamicResponse)
           ExitFailure _
              -- TODO: logging support
-           -> pure (Response Error output "" "" [])
+           -> pure (Response Error output "" "" [] DynamicResponse)
   where
     includeArgs :: [String]
     includeArgs =

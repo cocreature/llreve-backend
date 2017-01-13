@@ -7,6 +7,8 @@ module Llreve.Type
   , LogMessage(..)
   , LogMessage'
   , Response(..)
+  , ResponseMethod(..)
+  , SMTSolver(..)
   ) where
 
 import Control.Monad.Log (WithSeverity)
@@ -60,20 +62,37 @@ data LogMessage
                ,  llreveInp :: !LlreveInput}
   deriving (Show, Eq, Ord)
 
+data SMTSolver
+  = Eldarica
+  | Z3
+  deriving (Show, Eq, Ord)
+
+instance ToJSON SMTSolver where
+  toJSON Eldarica = "eldarica"
+  toJSON Z3 = "z3"
+
+data ResponseMethod = SolverResponse !SMTSolver | DynamicResponse
+
+instance ToJSON ResponseMethod where
+  toJSON (SolverResponse solver) = toJSON solver
+  toJSON DynamicResponse = "dynamic"
+
 data Response = Response
   { respResult :: !LlreveResult
   , llreveOutput :: !Text
   , solverOutput :: !Text
   , smt :: !Text
   , respInvariants :: ![DefineFun]
+  , respMethod :: !ResponseMethod
   }
 
 instance ToJSON Response where
-  toJSON (Response result llreve solver smt' invariants) =
+  toJSON (Response result llreve solver smt' invariants method) =
     object
       [ "result" .= result
       , "invariants" .= map ppDefineFun invariants
       , "llreve-output" .= llreve
       , "solver-output" .= solver
       , "smt" .= smt'
+      , "method" .= method
       ]
