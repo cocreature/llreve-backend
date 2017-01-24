@@ -25,8 +25,10 @@ RUN curl -SL https://github.com/Z3Prover/z3/archive/z3-$Z3_VERSION.tar.gz | tar 
              -DUSE_OPENMP=FALSE && \
     ninja && ninja install && \
     rm -r /z3-z3-$Z3_VERSION
-RUN curl -SL http://bifunctor.purelyfunctional.org/downloads/llreve -o /usr/bin/llreve && chmod +x /usr/bin/llreve
-RUN curl -SL http://bifunctor.purelyfunctional.org/downloads/llreve-dynamic -o /usr/bin/llreve-dynamic && chmod +x /usr/bin/llreve-dynamic
+ADD http://bifunctor.purelyfunctional.org/downloads/llreve /usr/bin/llreve
+RUN chmod +x /usr/bin/llreve
+ADD http://bifunctor.purelyfunctional.org/downloads/llreve-dynamic /usr/bin/llreve-dynamic
+RUN chmod +x /usr/bin/llreve-dynamic
 RUN apt-get update && apt-get install -y unzip
 RUN curl -SL http://logicrunch.it.uu.se:4096/%7Ewv/eldarica/eldarica-bin-nightly.zip > eldarica.zip && \
     unzip eldarica.zip && \
