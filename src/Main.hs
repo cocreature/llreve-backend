@@ -1,3 +1,4 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -7,16 +8,19 @@ module Main where
 import           Control.Applicative
 import           Control.Concurrent.Async.Lifted
 import           Control.Concurrent.Sem
+import           Control.Exception (IOException)
 import           Control.Monad.Catch hiding (Handler)
 import           Control.Monad.Except
 import qualified Control.Monad.Log as Log
 import           Control.Monad.Log hiding (Handler, Error)
 import           Control.Monad.Trans.Control
 import           Data.Aeson hiding (Error)
+import           Data.Monoid ((<>))
 import           Data.Proxy (Proxy)
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
+import           Data.Typeable
 import           Llreve.Solver
 import           Llreve.Type
 import           Llreve.Util
@@ -231,8 +235,27 @@ runLlreveDynamic prog1 prog2 patterns smtPath includeDir = do
 llreveAPI :: Proxy LlreveAPI
 llreveAPI = Proxy
 
+verifyExecutable :: FilePath -> IO Bool
+verifyExecutable path =
+  catch
+    (readProcessWithExitCode path [] "" >> pure True)
+    (\(_ :: IOException) ->
+       putStrLn
+         ("Error: Couldn’t execute " <> path <>
+          ". Please check that the executable is in your path and marked as executable") >>
+       pure False)
+
+verifyExecutables :: IO ()
+verifyExecutables = do
+  llreveOk <- verifyExecutable "llreve"
+  llreveDynamicOk <- verifyExecutable "llreve-dynamic"
+  z3Ok <- verifyExecutable "z3"
+  eldOk <- verifyExecutable "eld"
+  when (not (and [llreveOk, llreveDynamicOk, z3Ok, eldOk])) exitFailure
+
 main :: IO ()
 main = do
+  verifyExecutables
   queuedReqsSem <- newSem maxQueuedReqs
   concurrentReqsSem <- newSem maxConcurrentReqs
   includeDir <- getStddefIncludeDir
