@@ -4,10 +4,13 @@ module Control.Concurrent.Sem
   , waitSem
   , tryWaitSem
   , signalSem
+  , withSem
   ) where
 
-import Control.Monad
 import Control.Concurrent.STM
+import Control.Monad
+import Control.Monad.Catch
+import Control.Monad.IO.Class
 
 newtype Sem =
   Sem (TVar Int)
@@ -36,3 +39,6 @@ signalSem (Sem t) =
   atomically $ do
     i <- readTVar t
     writeTVar t $! i + 1
+
+withSem :: (MonadMask m, MonadIO m) => Sem -> m c -> m c
+withSem sem = bracket_ (liftIO (waitSem sem)) (liftIO (signalSem sem))

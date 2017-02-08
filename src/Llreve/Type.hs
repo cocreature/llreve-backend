@@ -22,6 +22,7 @@ data LlreveResult
   | Unknown
   | Error
   | Timeout
+  deriving (Show, Eq, Ord)
 
 instance ToJSON LlreveResult where
   toJSON Equivalent = "equivalent"

@@ -3,6 +3,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RecordWildCards #-}
 module Main where
 
 import           Control.Applicative
@@ -21,6 +22,8 @@ import           Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import           Data.Typeable
+import           Llreve.Rise4Fun
+import           Llreve.Run
 import           Llreve.Solver
 import           Llreve.Type
 import           Llreve.Util
@@ -68,11 +71,9 @@ instance FromJSON Request where
     pure (Request method (Pair prog1 prog2) patterns)
   parseJSON _ = empty
 
-type LlreveAPI = "llreve" :> ReqBody '[JSON] Request :> Post '[JSON] Response
+type LlreveAPI = ReqBody '[JSON] Request :> Post '[JSON] Response
 
-llreveArgsForSolver :: SMTSolver -> [String]
-llreveArgsForSolver Z3 = ["-muz"]
-llreveArgsForSolver Eldarica = []
+type API = "llreve" :> (LlreveAPI :<|> Rise4funAPI)
 
 -- Lifted version of mask because I don’t want to depend on lifted-base just for this function
 mask' :: MonadBaseControl IO m => ((m a -> m a) -> m b) -> m b
@@ -82,22 +83,8 @@ mask' f = control $ \runInBase ->
 loggingHandler :: MonadIO m => Log.Handler m LogMessage'
 loggingHandler = liftIO . print
 
-withQueuedSem :: Sem -> LoggingT LogMessage' IO c -> Handler c
-withQueuedSem queuedReqs action = do
-  res <- liftIO $ mask $ \unmasked -> do
-    lock <- tryWaitSem queuedReqs
-    if lock
-      then do
-        result <- unmasked (runLoggingT action (liftIO . print)) `onException` (signalSem queuedReqs)
-        signalSem queuedReqs
-        return (Right result)
-      else pure (Left err503)
-  case res of
-    Right res' -> pure res'
-    Left err -> throwError err
-
-server :: Maybe String -> Sem  -> Sem -> Server LlreveAPI
-server includeDir queuedReqs concurrentReqs (Request method (Pair prog1 prog2) patterns) =
+llreveServer :: Maybe String -> Sem  -> Sem -> Server LlreveAPI
+llreveServer includeDir queuedReqs concurrentReqs (Request method (Pair prog1 prog2) patterns) =
   withQueuedSem queuedReqs $
   withSystemTempFile "prog1.c" $ \file1 prog1Handle ->
     withSystemTempFile "prog2.c" $ \file2 prog2Handle ->
@@ -109,9 +96,7 @@ server includeDir queuedReqs concurrentReqs (Request method (Pair prog1 prog2) p
           hClose prog1Handle
           hClose prog2Handle
           hClose smtHandle
-        bracket_
-          (liftIO $ waitSem concurrentReqs)
-          (liftIO $ signalSem concurrentReqs) $
+        withSem concurrentReqs $
           case method of
             Solver solver' -> do
               resp <-
@@ -163,34 +148,6 @@ raceSolvers prog1 prog2 patterns includeDir = do
             runSolver prog1 prog2 smtFile llreveOut (solverConfig solver')
 
 
-llreveBinary :: String
-llreveBinary = "llreve"
-
--- In the case of an error Left is returned
-runLlreve
-  :: (MonadIO m, MonadLog LogMessage' m)
-  => FilePath -> FilePath -> FilePath -> [String] -> Maybe String -> ResponseMethod -> m (Either Response Text)
-runLlreve prog1 prog2 smtPath llreveArgs includeDir method = do
-  (exit, llreveOut) <-
-    liftIO $
-    readProcessWithExitCode
-      llreveBinary
-      (prog1 :
-       prog2 : "-o" : smtPath : "-inline-opts" : includeArgs ++ llreveArgs)
-      ""
-  case exit of
-    ExitSuccess -> pure (Right llreveOut)
-    ExitFailure _ -> do
-      llreveIn <- llreveInput prog1 prog2
-      logError (LlreveMsg "llreve failed" (ProgramOutput llreveOut) llreveIn)
-      pure (Left (Response Error llreveOut "" "" [] method))
-  where
-    includeArgs :: [String]
-    includeArgs =
-      case includeDir of
-        Nothing -> []
-        Just dir -> ["-I", dir]
-
 llreveDynamicBinary :: String
 llreveDynamicBinary = "llreve-dynamic"
 
@@ -232,7 +189,7 @@ runLlreveDynamic prog1 prog2 patterns smtPath includeDir = do
         Nothing -> []
         Just dir -> ["-I", dir]
 
-llreveAPI :: Proxy LlreveAPI
+llreveAPI :: Proxy API
 llreveAPI = Proxy
 
 verifyExecutable :: FilePath -> IO Bool
@@ -264,4 +221,7 @@ main = do
     cors
       (const $
        Just $ simpleCorsResourcePolicy {corsRequestHeaders = ["content-type"]}) $
-    serve llreveAPI (server includeDir queuedReqsSem concurrentReqsSem)
+    serve
+      llreveAPI
+      (llreveServer includeDir queuedReqsSem concurrentReqsSem :<|>
+       rise4funServer includeDir queuedReqsSem concurrentReqsSem)

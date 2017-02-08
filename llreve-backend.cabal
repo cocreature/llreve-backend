@@ -17,13 +17,15 @@ tested-with:         GHC == 8.0.1
 executable llreve-backend
   hs-source-dirs:      src
   other-modules:       Control.Concurrent.Sem
+                       Llreve.Rise4Fun
+                       Llreve.Run
                        Llreve.Solver
                        Llreve.Type
                        Llreve.Util
   main-is:             Main.hs
   default-language:    Haskell2010
   build-depends:       base >= 4.9 && < 5
-                     , aeson >= 0.11 && < 0.12
+                     , aeson >= 1.0 && < 1.1
                      , async >= 2.1 && < 2.2
                      , lifted-async >= 0.9 && < 0.10
                      , bytestring >= 0.10 && < 0.11
