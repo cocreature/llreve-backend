@@ -8,8 +8,8 @@ module Llreve.Rise4Fun
   , Sample(..)
   , Tutorial(..)
   , Rise4funAPI
-  , RunRequest(..)
-  , RunResponse(..)
+  , Rise4funRequest(..)
+  , Rise4funResponse(..)
   , ToolOutput(..)
   ) where
 
@@ -98,36 +98,34 @@ llreveVersion :: Text
 llreveVersion = "1.0"
 
 debugExample :: Text
-debugExample = debugExample0 <> "-----" <> debugExample1
+debugExample = Text.unlines (debugExample0 <> ["-----"] <> debugExample1)
   where
     debugExample0 =
-      Text.unlines
-        [ "extern int __mark(int);"
-        , "int f(int n) {"
-        , "  int i = 0;"
-        , "  int j = 0;"
-        , ""
-        , "  while (__mark(42) & (i <= n)) {"
-        , "    i++;"
-        , "    j++;"
-        , "  }"
-        , "  return j;"
-        , "}"
-        ]
+      [ "extern int __mark(int);"
+      , "int f(int n) {"
+      , "  int i = 0;"
+      , "  int j = 0;"
+      , ""
+      , "  while (__mark(42) & (i <= n)) {"
+      , "    i++;"
+      , "    j++;"
+      , "  }"
+      , "  return j;"
+      , "}"
+      ]
     debugExample1 =
-      Text.unlines
-        [ "extern int __mark(int);"
-        , "int f(int n) {"
-        , "  int i = n;"
-        , "  int j = 0;"
-        , ""
-        , "  while (__mark(42) & (i >= 0)) {"
-        , "    i = i - 1;"
-        , "    j++;"
-        , "  }"
-        , "  return j;"
-        , "}"
-        ]
+      [ "extern int __mark(int);"
+      , "int f(int n) {"
+      , "  int i = n;"
+      , "  int j = 0;"
+      , ""
+      , "  while (__mark(42) & (i >= 0)) {"
+      , "    i = i - 1;"
+      , "    j++;"
+      , "  }"
+      , "  return j;"
+      , "}"
+      ]
 
 llreveMetadata :: Metadata
 llreveMetadata =
@@ -144,8 +142,9 @@ llreveMetadata =
   , mdInstitutionImageUrl = "https://formal.iti.kit.edu/img/intern/kit_logo.png"
   , mdMimeType = "text/plain"
   , mdSupportsLanguageSyntax = False
-  , mdTitle = "Something something equivalence"
-  , mdDescription = "Something something equivalence description"
+  , mdTitle = "Prove the equivalence of two C programs"
+  , mdDescription =
+      "llrêve can prove the equivalence of two C programs. The programs have to be separated by a line starting with '----'. Corresponding loops should be marked with __mark(id) where the id has to be the same for both programs."
   , mdQuestion = "Are these programs equivalent?"
   , mdUrl = "http://formal.iti.kit.edu/projects/improve/reve/"
   , mdVideoUrl = ""
@@ -154,28 +153,28 @@ llreveMetadata =
   , mdTutorials = []
   }
 
-data RunRequest = RunRequest
+data Rise4funRequest = R4fRequest
   { runReqVersion :: !Text
   , runReqSource :: !Text
   } deriving (Show, Eq, Ord)
 
-instance FromJSON RunRequest where
+instance FromJSON Rise4funRequest where
   parseJSON (Object v) = do
     version <- v .: "Version"
     source <- v .: "Source"
-    pure (RunRequest version source)
+    pure (R4fRequest version source)
   parseJSON _ = empty
 
 type Rise4funAPI = "rise4fun" :> (("metadata" :> Get '[JSON] Metadata) :<|>
-                                  ("run"  :> ReqBody '[JSON] RunRequest :> Post '[JSON] RunResponse))
+                                  ("run"  :> ReqBody '[JSON] Rise4funRequest :> Post '[JSON] Rise4funResponse))
 
-data RunResponse = RunResponse
+data Rise4funResponse = R4fResponse
   { runRespVersion :: !Text
   , runRespOutputs :: ![ToolOutput]
   } deriving (Show, Eq, Ord)
 
-instance ToJSON RunResponse where
-  toJSON (RunResponse version outputs) =
+instance ToJSON Rise4funResponse where
+  toJSON (R4fResponse version outputs) =
     object ["Version" .= version, "Outputs" .= outputs]
 
 data ToolOutput = ToolOutput
@@ -196,13 +195,12 @@ rise4funServer includeDir queuedReqs concurrentReqs =
   return llreveMetadata :<|>
   handleRun includeDir queuedReqs concurrentReqs
 
-responseToRunResponse :: Response -> RunResponse
-responseToRunResponse (Response result _llreveOutput _solverOutput _smt _invariants _method) =
-  RunResponse llreveVersion [ToolOutput "text/plain" (Text.pack (show result))]
+responseToR4fResponse :: Response -> Rise4funResponse
+responseToR4fResponse (Response result _llreveOutput _solverOutput _smt _invariants _method) =
+  R4fResponse llreveVersion [ToolOutput "text/plain" (Text.pack (show result))]
 
--- TODO we should limit the number of concurrent requests here
-handleRun :: Maybe String -> Sem -> Sem -> RunRequest -> ExceptT ServantErr IO RunResponse
-handleRun includeDir queuedReqs concurrentReqs (RunRequest _ source) =
+handleRun :: Maybe String -> Sem -> Sem -> Rise4funRequest -> ExceptT ServantErr IO Rise4funResponse
+handleRun includeDir queuedReqs concurrentReqs (R4fRequest _ source) =
   withQueuedSem queuedReqs $
   withSystemTempFile "prog1.c" $ \file1 prog1Handle ->
     withSystemTempFile "prog2.c" $ \file2 prog2Handle ->
@@ -222,13 +220,12 @@ handleRun includeDir queuedReqs concurrentReqs (RunRequest _ source) =
               (llreveArgsForSolver Z3)
               includeDir
               (SolverResponse Z3)
-          responseToRunResponse <$>
+          responseToR4fResponse <$>
             case resp of
               Left resp' -> pure resp'
               Right llreveOut ->
                 runSolver file1 file2 smtFile llreveOut (solverConfig Z3)
   where
-    (prog1', prog2') =
-      break isSplitterLine (Text.lines source)
+    (prog1', prog2') = break isSplitterLine (Text.lines source)
     prog2 = Text.unlines (drop 1 prog2')
     prog1 = Text.unlines prog1'
