@@ -17,6 +17,7 @@ import           Control.Applicative
 import           Control.Concurrent.Sem
 import           Control.Monad.Except
 import           Data.Aeson hiding (Error)
+import           Data.List (intersperse)
 import           Data.Monoid
 import           Data.Text (Text)
 import qualified Data.Text as Text
@@ -94,6 +95,7 @@ instance ToJSON Metadata where
       -- , "Tutorials" .= mdTutorials
       ]
 
+-- This needs to be incremented to invalidate the cache of rise4fun
 llreveVersion :: Text
 llreveVersion = "1.0"
 
@@ -148,7 +150,7 @@ llreveMetadata =
   , mdQuestion = "Are these programs equivalent?"
   , mdUrl = "http://formal.iti.kit.edu/projects/improve/reve/"
   , mdVideoUrl = ""
-  , mdDisableErrorTable = False
+  , mdDisableErrorTable = True
   , mdSamples = [Sample "loop" debugExample]
   , mdTutorials = []
   }
@@ -195,9 +197,51 @@ rise4funServer includeDir queuedReqs concurrentReqs =
   return llreveMetadata :<|>
   handleRun includeDir queuedReqs concurrentReqs
 
+-- for some reason proper code blocks don’t seem to work so for now we
+-- just add additional lines since markdown ignores linekbreaks
+-- otherwise
+wrapInCodeBlock :: Text -> [Text]
+wrapInCodeBlock t = intersperse "" (Text.lines t)
+
 responseToR4fResponse :: Response -> Rise4funResponse
-responseToR4fResponse (Response result _llreveOutput _solverOutput _smt _invariants _method) =
-  R4fResponse llreveVersion [ToolOutput "text/plain" (Text.pack (show result))]
+responseToR4fResponse (Response result llreveOutput solverOutput _smt _invariants _method) =
+  case result of
+    Error ->
+      R4fResponse
+        llreveVersion
+        [ ToolOutput
+            "text/x-web-markdown"
+            (Text.unlines $
+             ["## An error occured", "### Output of llrêve"] <>
+             wrapInCodeBlock llreveOutput <>
+             ["### Output of the SMT solver"] <>
+             wrapInCodeBlock solverOutput)
+        ]
+    Equivalent ->
+      R4fResponse
+        llreveVersion
+        [ToolOutput "text/plain" "The programs have been proven equivalent."]
+    NotEquivalent ->
+      R4fResponse
+        llreveVersion
+        [ ToolOutput
+            "text/plain"
+            "A difference has been detected, the programs are not equivalent."
+        ]
+    Unknown ->
+      R4fResponse
+        llreveVersion
+        [ ToolOutput
+            "text/plain"
+            "The programs could neither be proven or disproven equivalent."
+        ]
+    Timeout ->
+      R4fResponse
+        llreveVersion
+        [ ToolOutput
+            "text/plain"
+            "The programs could not be proven equivalent in the given timeframe."
+        ]
 
 handleRun :: Maybe String -> Sem -> Sem -> Rise4funRequest -> ExceptT ServantErr IO Rise4funResponse
 handleRun includeDir queuedReqs concurrentReqs (R4fRequest _ source) =
@@ -222,7 +266,10 @@ handleRun includeDir queuedReqs concurrentReqs (R4fRequest _ source) =
               (SolverResponse Z3)
           responseToR4fResponse <$>
             case resp of
-              Left resp' -> pure resp'
+              Left resp' ->
+                liftIO $ print (Text.lines $ llreveOutput resp') >>
+
+                pure resp'
               Right llreveOut ->
                 runSolver file1 file2 smtFile llreveOut (solverConfig Z3)
   where
