@@ -17,7 +17,6 @@ import           Control.Applicative
 import           Control.Concurrent.Sem
 import           Control.Monad.Except
 import           Data.Aeson hiding (Error)
-import           Data.Bifunctor
 import           Data.Monoid
 import           Data.Text (Text)
 import qualified Data.Text as Text
@@ -198,7 +197,7 @@ rise4funServer includeDir queuedReqs concurrentReqs =
   handleRun includeDir queuedReqs concurrentReqs
 
 responseToRunResponse :: Response -> RunResponse
-responseToRunResponse (Response result llreveOutput solvreOutput smt invariants _method) =
+responseToRunResponse (Response result _llreveOutput _solverOutput _smt _invariants _method) =
   RunResponse llreveVersion [ToolOutput "text/plain" (Text.pack (show result))]
 
 -- TODO we should limit the number of concurrent requests here
