@@ -9,6 +9,7 @@ module Llreve.Type
   , Response(..)
   , ResponseMethod(..)
   , SMTSolver(..)
+  , LlreveOutput(..)
   ) where
 
 import Control.Monad.Log (WithSeverity)
@@ -78,9 +79,14 @@ instance ToJSON ResponseMethod where
   toJSON (SolverResponse solver) = toJSON solver
   toJSON DynamicResponse = "dynamic"
 
+data LlreveOutput = LlreveOutput
+  { llreveStdout :: !Text
+  , llvmIr :: !(Text, Text)
+  }
+
 data Response = Response
   { respResult :: !LlreveResult
-  , llreveOutput :: !Text
+  , llreveOutput :: !LlreveOutput
   , solverOutput :: !Text
   , smt :: !Text
   , respInvariants :: ![DefineFun]
@@ -88,11 +94,13 @@ data Response = Response
   }
 
 instance ToJSON Response where
-  toJSON (Response result llreve solver smt' invariants method) =
+  toJSON (Response result (LlreveOutput llreve (ir1, ir2)) solver smt' invariants method) =
     object
       [ "result" .= result
       , "invariants" .= map ppDefineFun invariants
       , "llreve-output" .= llreve
+      , "llvm-ir-1" .= ir1
+      , "llvm-ir-2" .= ir2
       , "solver-output" .= solver
       , "smt" .= smt'
       , "method" .= method

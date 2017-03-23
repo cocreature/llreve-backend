@@ -65,7 +65,7 @@ solverConfig Eldarica =
 
 runSolver
   :: (MonadIO m, MonadLog LogMessage' m)
-  => FilePath -> FilePath -> FilePath -> Text -> SolverConfig -> m Response
+  => FilePath -> FilePath -> FilePath -> LlreveOutput -> SolverConfig -> m Response
 runSolver prog1 prog2 smtPath llreveOut solverConf = do
   (exit, solverOutp) <-
     liftIO $

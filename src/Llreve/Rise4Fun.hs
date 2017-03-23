@@ -213,7 +213,7 @@ responseToR4fResponse (Response result llreveOutput solverOutput _smt _invariant
             "text/x-web-markdown"
             (Text.unlines $
              ["## An error occured", "### Output of llrêve"] <>
-             wrapInCodeBlock llreveOutput <>
+             wrapInCodeBlock (llreveStdout llreveOutput) <>
              ["### Output of the SMT solver"] <>
              wrapInCodeBlock solverOutput)
         ]
@@ -266,10 +266,7 @@ handleRun includeDir queuedReqs concurrentReqs (R4fRequest _ source) =
               (SolverResponse Z3)
           responseToR4fResponse <$>
             case resp of
-              Left resp' ->
-                liftIO $ print (Text.lines $ llreveOutput resp') >>
-
-                pure resp'
+              Left resp' -> pure resp'
               Right llreveOut ->
                 runSolver file1 file2 smtFile llreveOut (solverConfig Z3)
   where

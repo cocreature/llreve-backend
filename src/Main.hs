@@ -167,21 +167,32 @@ runLlreveDynamic prog1 prog2 patterns smtPath includeDir = do
       hClose patternHandle
     processResult <-
       liftIO $
-      readProcessWithTimeout (maxTimeout * (10 ^ (6 :: Int)))
+      readProcessWithTimeout
+        (maxTimeout * (10 ^ (6 :: Int)))
         llreveDynamicBinary
         ([prog1, prog2, "-patterns", patternFile, "-o", smtPath] ++ includeArgs)
         ""
+    -- for now we do not return LLVM ir this case
+    let llreveOutput outp = LlreveOutput outp ("", "")
     case processResult of
       (output, Nothing) -> do
-        pure (Response Timeout output "" "" [] DynamicResponse)
+        pure (Response Timeout (llreveOutput output) "" "" [] DynamicResponse)
       (output, Just exit) ->
         case exit of
           ExitSuccess -> do
             smtFile <- liftIO $ Text.readFile smtPath
-            pure (Response (parseLlreveDynamicResult output) output "" smtFile [] DynamicResponse)
+            pure
+              (Response
+                 (parseLlreveDynamicResult output)
+                 (llreveOutput output)
+                 ""
+                 smtFile
+                 []
+                 DynamicResponse)
           ExitFailure _
              -- TODO: logging support
-           -> pure (Response Error output "" "" [] DynamicResponse)
+           ->
+            pure (Response Error (llreveOutput output) "" "" [] DynamicResponse)
   where
     includeArgs :: [String]
     includeArgs =

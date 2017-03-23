@@ -6,16 +6,19 @@ module Llreve.Run
   , withQueuedSem
   ) where
 
-import Control.Concurrent.Sem
-import Control.Monad.Catch hiding (Handler)
-import Control.Monad.IO.Class
-import Control.Monad.Log hiding (Handler, Error)
-import Data.Text (Text)
-import Llreve.Solver
-import Llreve.Type
-import Llreve.Util
-import Servant
-import System.Exit
+import           Control.Concurrent.Sem
+import           Control.Monad.Catch hiding (Handler)
+import           Control.Monad.IO.Class
+import           Control.Monad.Log hiding (Handler, Error)
+import           Data.Text (Text)
+import qualified Data.Text.IO as Text
+import           Llreve.Solver
+import           Llreve.Type
+import           Llreve.Util
+import           Servant
+import           System.Exit
+import           System.IO
+import           System.IO.Temp
 
 llreveBinary :: String
 llreveBinary = "llreve"
@@ -24,23 +27,54 @@ llreveArgsForSolver :: SMTSolver -> [String]
 llreveArgsForSolver Z3 = ["-muz"]
 llreveArgsForSolver Eldarica = []
 
+readLLVMIR :: (String, String) -> IO (Text, Text)
+readLLVMIR (ir1, ir2) = do
+  (,) <$> Text.readFile ir1 <*> Text.readFile ir2
+
 -- In the case of an error Left is returned
 runLlreve
   :: (MonadIO m, MonadLog LogMessage' m)
-  => FilePath -> FilePath -> FilePath -> [String] -> Maybe String -> ResponseMethod -> m (Either Response Text)
+  => FilePath
+  -> FilePath
+  -> FilePath
+  -> [String]
+  -> Maybe String
+  -> ResponseMethod
+  -> m (Either Response LlreveOutput)
 runLlreve prog1 prog2 smtPath llreveArgs includeDir method = do
   (exit, llreveOut) <-
     liftIO $
-    readProcessWithExitCode
-      llreveBinary
-      (prog1 :
-       prog2 : "-o" : smtPath : "-inline-opts" : includeArgs ++ llreveArgs)
-      ""
+    withSystemTempFile "ir1.ll" $ \ir1File ir1Handle -> do
+      hClose ir1Handle
+      withSystemTempFile "ir2.ll" $ \ir2File ir2Handle -> do
+        hClose ir2Handle
+        (exit, llreveOut) <-
+          liftIO $
+          readProcessWithExitCode
+            llreveBinary
+            ([ prog1
+             , prog2
+             , "-o"
+             , smtPath
+             , "-write-ir-1"
+             , ir1File
+             , "-write-ir-2"
+             , ir2File
+             , "-inline-opts"
+             ] ++
+             includeArgs ++ llreveArgs)
+            ""
+        llvmIR <- readLLVMIR (ir1File, ir2File)
+        pure (exit, LlreveOutput llreveOut llvmIR)
   case exit of
     ExitSuccess -> pure (Right llreveOut)
     ExitFailure _ -> do
       llreveIn <- llreveInput prog1 prog2
-      logError (LlreveMsg "llreve failed" (ProgramOutput llreveOut) llreveIn)
+      logError
+        (LlreveMsg
+           "llreve failed"
+           (ProgramOutput (llreveStdout llreveOut))
+           llreveIn)
       pure (Left (Response Error llreveOut "" "" [] method))
   where
     includeArgs :: [String]
