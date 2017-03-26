@@ -204,7 +204,7 @@ wrapInCodeBlock :: Text -> [Text]
 wrapInCodeBlock t = intersperse "" (Text.lines t)
 
 responseToR4fResponse :: Response -> Rise4funResponse
-responseToR4fResponse (Response result llreveOutput solverOutput _smt _invariants _method) =
+responseToR4fResponse (Response llreveOutput (SolverOutput solverStdout _invariants result) _method) =
   case result of
     Error ->
       R4fResponse
@@ -215,7 +215,7 @@ responseToR4fResponse (Response result llreveOutput solverOutput _smt _invariant
              ["## An error occured", "### Output of llrêve"] <>
              wrapInCodeBlock (llreveStdout llreveOutput) <>
              ["### Output of the SMT solver"] <>
-             wrapInCodeBlock solverOutput)
+             wrapInCodeBlock solverStdout)
         ]
     Equivalent ->
       R4fResponse
@@ -256,20 +256,17 @@ handleRun includeDir queuedReqs concurrentReqs (R4fRequest _ source) =
           hClose prog2Handle
           hClose smtHandle
         withSem concurrentReqs $ do
-          resp <-
-            runLlreve
-              file1
-              file2
-              smtFile
-              (llreveArgsForSolver Z3)
-              includeDir
-              (SolverResponse Z3)
-          responseToR4fResponse <$>
-            case resp of
-              Left resp' -> pure resp'
-              Right llreveOut ->
-                runSolver file1 file2 smtFile llreveOut (solverConfig Z3)
+          (llreveOutput, llreveSuccessful) <-
+            runLlreve file1 file2 smtFile (llreveArgsForSolver Z3) includeDir
+          if not llreveSuccessful
+            then pure $ responseToR4fResponse (llreveError llreveOutput method)
+            else do
+              solverOutput <- runSolver file1 file2 smtFile (solverConfig Z3)
+              pure $
+                responseToR4fResponse
+                  (Response llreveOutput solverOutput method)
   where
     (prog1', prog2') = break isSplitterLine (Text.lines source)
     prog2 = Text.unlines (drop 1 prog2')
     prog1 = Text.unlines prog1'
+    method = SolverResponse Z3

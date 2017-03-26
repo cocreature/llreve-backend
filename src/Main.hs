@@ -99,18 +99,20 @@ llreveServer includeDir queuedReqs concurrentReqs (Request method (Pair prog1 pr
         withSem concurrentReqs $
           case method of
             Solver solver' -> do
-              resp <-
+              let responseMethod = SolverResponse solver'
+              (llreveOutput, llreveSuccessful) <-
                 runLlreve
                   file1
                   file2
                   smtFile
                   (llreveArgsForSolver solver')
                   includeDir
-                  (SolverResponse solver')
-              case resp of
-                Left resp' -> pure resp'
-                Right llreveOut ->
-                  runSolver file1 file2 smtFile llreveOut (solverConfig solver')
+              if not llreveSuccessful
+                then pure (llreveError llreveOutput responseMethod)
+                else do
+                  solverOutput <-
+                    runSolver file1 file2 smtFile (solverConfig solver')
+                  pure (Response llreveOutput solverOutput responseMethod)
             Dynamic -> runLlreveDynamic file1 file2 patterns smtFile includeDir
             Race -> raceResponse <$> raceSolvers file1 file2 patterns includeDir
 
@@ -140,12 +142,15 @@ raceSolvers prog1 prog2 patterns includeDir = do
     runSolver' solver' = do
       withSystemTempFile "query.smt2" $ \smtFile smtHandle -> do
         liftIO $ hClose smtHandle
-        resp <-
-          runLlreve prog1 prog2 smtFile (llreveArgsForSolver solver') includeDir (SolverResponse solver')
-        case resp of
-          Left resp' -> pure resp'
-          Right llreveOut ->
-            runSolver prog1 prog2 smtFile llreveOut (solverConfig solver')
+        (llreveOutput, llreveSuccessful) <-
+          runLlreve prog1 prog2 smtFile (llreveArgsForSolver solver') includeDir
+        if not llreveSuccessful
+          then pure (llreveError llreveOutput method)
+          else do
+            solverOutput <- runSolver prog1 prog2 smtFile (solverConfig solver')
+            pure (Response llreveOutput solverOutput method)
+      where
+        method = SolverResponse solver'
 
 
 llreveDynamicBinary :: String
@@ -173,26 +178,26 @@ runLlreveDynamic prog1 prog2 patterns smtPath includeDir = do
         ([prog1, prog2, "-patterns", patternFile, "-o", smtPath] ++ includeArgs)
         ""
     -- for now we do not return LLVM ir this case
-    let llreveOutput outp = LlreveOutput outp ("", "")
+    let llreveOutput outp = LlreveOutput outp ("", "") ""
     case processResult of
       (output, Nothing) -> do
-        pure (Response Timeout (llreveOutput output) "" "" [] DynamicResponse)
+        pure
+          (Response
+             (llreveOutput output)
+             (SolverOutput "" [] Timeout)
+             DynamicResponse)
       (output, Just exit) ->
         case exit of
           ExitSuccess -> do
             smtFile <- liftIO $ Text.readFile smtPath
             pure
               (Response
-                 (parseLlreveDynamicResult output)
-                 (llreveOutput output)
-                 ""
-                 smtFile
-                 []
+                 (LlreveOutput output ("", "") smtFile)
+                 (SolverOutput "" [] (parseLlreveDynamicResult output))
                  DynamicResponse)
           ExitFailure _
              -- TODO: logging support
-           ->
-            pure (Response Error (llreveOutput output) "" "" [] DynamicResponse)
+           -> pure (llreveError (llreveOutput output) DynamicResponse)
   where
     includeArgs :: [String]
     includeArgs =

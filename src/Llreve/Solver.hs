@@ -65,8 +65,8 @@ solverConfig Eldarica =
 
 runSolver
   :: (MonadIO m, MonadLog LogMessage' m)
-  => FilePath -> FilePath -> FilePath -> LlreveOutput -> SolverConfig -> m Response
-runSolver prog1 prog2 smtPath llreveOut solverConf = do
+  => FilePath -> FilePath -> FilePath -> SolverConfig -> m SolverOutput
+runSolver prog1 prog2 smtPath solverConf = do
   (exit, solverOutp) <-
     liftIO $
     readProcessWithExitCode
@@ -77,8 +77,7 @@ runSolver prog1 prog2 smtPath llreveOut solverConf = do
     ExitSuccess -> do
       let result = solverParseResult solverConf solverOutp
       invariants <- findInvariants result smtPath solverOutp
-      smt' <- liftIO $ Text.readFile smtPath
-      pure (Response result llreveOut solverOutp smt' invariants (SolverResponse (solver solverConf)))
+      pure (SolverOutput solverOutp invariants result)
     ExitFailure _ -> do
       llreveIn <- llreveInput prog1 prog2
       smtInp <- liftIO $ Text.readFile smtPath
@@ -89,7 +88,7 @@ runSolver prog1 prog2 smtPath llreveOut solverConf = do
            (SMTFile smtInp)
            (ProgramOutput solverOutp)
            llreveIn)
-      pure (Response Error llreveOut solverOutp smtInp [] (SolverResponse (solver solverConf)))
+      pure (SolverOutput solverOutp [] Error)
 
 findInvariants
   :: (MonadIO m, MonadLog LogMessage' m)

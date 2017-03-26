@@ -31,7 +31,7 @@ readLLVMIR :: (String, String) -> IO (Text, Text)
 readLLVMIR (ir1, ir2) = do
   (,) <$> Text.readFile ir1 <*> Text.readFile ir2
 
--- In the case of an error Left is returned
+-- | The 'Bool' indicates whether llreve ran successfully
 runLlreve
   :: (MonadIO m, MonadLog LogMessage' m)
   => FilePath
@@ -39,9 +39,8 @@ runLlreve
   -> FilePath
   -> [String]
   -> Maybe String
-  -> ResponseMethod
-  -> m (Either Response LlreveOutput)
-runLlreve prog1 prog2 smtPath llreveArgs includeDir method = do
+  -> m (LlreveOutput, Bool)
+runLlreve prog1 prog2 smtPath llreveArgs includeDir = do
   (exit, llreveOut) <-
     liftIO $
     withSystemTempFile "ir1.ll" $ \ir1File ir1Handle -> do
@@ -65,9 +64,10 @@ runLlreve prog1 prog2 smtPath llreveArgs includeDir method = do
              includeArgs ++ llreveArgs)
             ""
         llvmIR <- readLLVMIR (ir1File, ir2File)
-        pure (exit, LlreveOutput llreveOut llvmIR)
+        generatedSMT <- Text.readFile smtPath
+        pure (exit, LlreveOutput llreveOut llvmIR generatedSMT)
   case exit of
-    ExitSuccess -> pure (Right llreveOut)
+    ExitSuccess -> pure (llreveOut, True)
     ExitFailure _ -> do
       llreveIn <- llreveInput prog1 prog2
       logError
@@ -75,7 +75,7 @@ runLlreve prog1 prog2 smtPath llreveArgs includeDir method = do
            "llreve failed"
            (ProgramOutput (llreveStdout llreveOut))
            llreveIn)
-      pure (Left (Response Error llreveOut "" "" [] method))
+      pure (llreveOut, False)
   where
     includeArgs :: [String]
     includeArgs =

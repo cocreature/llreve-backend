@@ -10,6 +10,8 @@ module Llreve.Type
   , ResponseMethod(..)
   , SMTSolver(..)
   , LlreveOutput(..)
+  , SolverOutput(..)
+  , llreveError
   ) where
 
 import Control.Monad.Log (WithSeverity)
@@ -82,26 +84,33 @@ instance ToJSON ResponseMethod where
 data LlreveOutput = LlreveOutput
   { llreveStdout :: !Text
   , llvmIr :: !(Text, Text)
+  , llreveSmt :: !Text
+  }
+
+data SolverOutput = SolverOutput
+  { solverStdout :: !Text
+  , solverInvariants :: ![DefineFun]
+  , solverResult :: !LlreveResult
   }
 
 data Response = Response
-  { respResult :: !LlreveResult
-  , llreveOutput :: !LlreveOutput
-  , solverOutput :: !Text
-  , smt :: !Text
-  , respInvariants :: ![DefineFun]
+  { llreveOutput :: !LlreveOutput
+  , solverOutput :: !SolverOutput
   , respMethod :: !ResponseMethod
   }
 
+llreveError :: LlreveOutput -> ResponseMethod -> Response
+llreveError output method = Response output (SolverOutput "" [] Error) method
+
 instance ToJSON Response where
-  toJSON (Response result (LlreveOutput llreve (ir1, ir2)) solver smt' invariants method) =
+  toJSON (Response (LlreveOutput llreve (ir1, ir2) smt') (SolverOutput solverOut invariants result) method) =
     object
       [ "result" .= result
       , "invariants" .= map ppDefineFun invariants
       , "llreve-output" .= llreve
       , "llvm-ir-1" .= ir1
       , "llvm-ir-2" .= ir2
-      , "solver-output" .= solver
+      , "solver-output" .= solverOut
       , "smt" .= smt'
       , "method" .= method
       ]
