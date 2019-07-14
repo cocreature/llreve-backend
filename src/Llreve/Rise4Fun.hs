@@ -15,10 +15,9 @@ module Llreve.Rise4Fun
 
 import           Control.Applicative
 import           Control.Concurrent.Sem
-import           Control.Monad.Except
+import           Control.Monad.IO.Class
 import           Data.Aeson hiding (Error)
 import           Data.List (intersperse)
-import           Data.Monoid
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
@@ -243,7 +242,7 @@ responseToR4fResponse (Response llreveOutput (SolverOutput solverStdout _invaria
             "The programs could not be proven equivalent in the given timeframe."
         ]
 
-handleRun :: Maybe String -> Sem -> Sem -> Rise4funRequest -> ExceptT ServantErr IO Rise4funResponse
+handleRun :: Maybe String -> Sem -> Sem -> Rise4funRequest -> Handler Rise4funResponse
 handleRun includeDir queuedReqs concurrentReqs (R4fRequest _ source) =
   withQueuedSem queuedReqs $
   withSystemTempFile "prog1.c" $ \file1 prog1Handle ->

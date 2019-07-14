@@ -1,11 +1,7 @@
-resolver: lts-8.19
+resolver: lts-13.28
 packages:
 - '.'
 extra-deps:
-- horname-0.1.3.0
-flags: {}
-extra-package-dbs: []
-image:
-  container:
-    base: "cocreature/llreve-backend-base"
-    name: "cocreature/llreve-backend"
+- horname-0.2.0.0
+nix:
+  packages: [zlib]
